@@ -1,0 +1,10 @@
+# Dependencies for the vision aim hook, in addition to requirements.txt.
+# opencv-python and numpy are already listed there.
+openai>=1.52.0
+python-dotenv>=1.0.1
+pydantic>=2.7
+PyYAML>=6.0.1
+Pillow>=10.3
+pillow-heif>=1.8.0
+httpx>=0.27
+rapidfuzz>=3.9
