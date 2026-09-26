@@ -1,3 +1,4 @@
 opencv-python
 numpy
 flask
+-r requirements-vision.txt

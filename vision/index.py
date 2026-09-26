@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 
 from pydantic import ValidationError
 
@@ -53,6 +54,7 @@ def build_catalog(
     angles_csv: str | Path | None = None,
     use_cache: bool = True,
     save_debug: bool | None = None,
+    on_progress: Callable[[dict], None] | None = None,
 ) -> Catalog:
     """Index angle-tagged photos (or one sweep video) and write catalog.json."""
     settings = settings if settings is not None else load_settings()
@@ -84,6 +86,8 @@ def build_catalog(
     tiles = [tile for frame in frames for tile in make_tiles(frame, settings)]
     fresh: list[Detection] = []
     failed: set[str] = set()
+    if on_progress is not None:
+        on_progress({"phase": "indexing", "done": 0, "total": len(tiles)})
     if tiles:
         chosen = detector_lib.resolve_detector(settings, detector)
         fresh, failed = _index_tiles(
@@ -92,6 +96,7 @@ def build_catalog(
             client_factory=client_factory,
             detector=chosen,
             use_cache=use_cache,
+            on_progress=on_progress,
         )
     if failed:
         fresh = [item for item in fresh if item.frame_file not in failed]
@@ -188,6 +193,7 @@ def catalog_for_query(
     angles_csv: str | Path | None = None,
     use_cache: bool = True,
     save_debug: bool | None = None,
+    on_progress: Callable[[dict], None] | None = None,
 ) -> Catalog:
     """Reuse catalog.json when the photos and indexing settings have not changed."""
     settings = settings if settings is not None else load_settings()
@@ -203,6 +209,8 @@ def catalog_for_query(
                 len(existing.objects),
                 catalog_path,
             )
+            if on_progress is not None:
+                on_progress({"phase": "indexing", "done": 1, "total": 1})
             return existing
     return build_catalog(
         source,
@@ -213,6 +221,7 @@ def catalog_for_query(
         angles_csv=angles_csv,
         use_cache=use_cache,
         save_debug=save_debug,
+        on_progress=on_progress,
     )
 
 
@@ -348,24 +357,35 @@ def _read_catalog(path: Path) -> Catalog | None:
 
 
 def _index_tiles(
-    tiles, settings, *, client_factory, detector, use_cache: bool
+    tiles,
+    settings,
+    *,
+    client_factory,
+    detector,
+    use_cache: bool,
+    on_progress: Callable[[dict], None] | None = None,
 ) -> tuple[list[Detection], set[str]]:
     if not tiles:
         return [], set()
     workers = min(settings.max_concurrency, len(tiles))
     detections: list[Detection] = []
     failed: set[str] = set()
+    total = len(tiles)
+    done = 0
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = [
             pool.submit(_safe_index_tile, tile, settings, client_factory, detector, use_cache)
             for tile in tiles
         ]
-        for future in futures:
+        for future in as_completed(futures):
             frame_file, found, ok = future.result()
             if ok:
                 detections.extend(found)
             else:
                 failed.add(frame_file)
+            done += 1
+            if on_progress is not None:
+                on_progress({"phase": "indexing", "done": done, "total": total})
     if failed:
         detections = [item for item in detections if item.frame_file not in failed]
     return detections, failed

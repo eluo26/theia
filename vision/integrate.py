@@ -6,6 +6,7 @@ The API key stays in this process. answer() uses build_catalog / locate.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Callable
 
 from vision.config import Settings, load_settings
 from vision.index import catalog_for_query
@@ -24,6 +25,7 @@ def answer(
     angles_csv: str | Path | None = None,
     use_cache: bool = True,
     save_debug: bool | None = None,
+    on_progress: Callable[[dict], None] | None = None,
 ) -> dict:
     """Index a scan if needed, answer the question, and say whether to fire.
 
@@ -40,7 +42,10 @@ def answer(
         angles_csv=angles_csv,
         use_cache=use_cache,
         save_debug=save_debug,
+        on_progress=on_progress,
     )
+    if on_progress is not None:
+        on_progress({"phase": "matching", "done": 0, "total": 1})
     result = locate(
         query,
         catalog,
@@ -49,6 +54,8 @@ def answer(
         detector=detector,
         use_cache=use_cache,
     )
+    if on_progress is not None:
+        on_progress({"phase": "matching", "done": 1, "total": 1})
     fire_laser = result.status == "found"
     aim = None
     if fire_laser:

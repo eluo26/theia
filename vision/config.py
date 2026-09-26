@@ -163,11 +163,27 @@ def load_settings(config_path: Path | None = None, *, load_env: bool = True) -> 
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise ConfigError(f"{path} must be a YAML mapping of settings.")
+    raw = _apply_env_overrides(raw)
 
     try:
         return Settings.model_validate(raw)
     except ValidationError as exc:
         raise ConfigError(f"Invalid config file {path}:\n{exc}") from exc
+
+
+def _apply_env_overrides(raw: dict) -> dict:
+    """Honor VISION_MODEL from .env without changing provider selection in code."""
+    model = os.environ.get("VISION_MODEL", "").strip()
+    if not model:
+        return raw
+    provider = raw.get("provider")
+    if provider == "xai":
+        raw["grok_fast_model"] = model
+        raw["grok_reasoning_model"] = model
+    elif provider == "openai":
+        raw["openai_fast_model"] = model
+        raw["openai_reasoning_model"] = model
+    return raw
 
 
 def api_key_is_present(settings: Settings | None = None) -> bool:

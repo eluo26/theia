@@ -1,31 +1,18 @@
 """Vision hook for the UI and the laser program.
 
-Existing search, camera, and laser modules are unchanged. Call this when
-JPEG frames from the camera are ready:
+Call this when JPEG frames from the camera are ready:
 
-    from vision_hook import aim
+    from vision_hook import aim, search_frames
 
     aim(frames, query)
+    search_frames(frames, query)
 
 frames is a list of {"image": jpeg_bytes, "pan": degrees, "tilt": degrees}
 with an optional "timestamp" string. pan 0 is pan home and positive is right.
 tilt 0 is horizontal and positive is up.
 
-The return value is:
-
-    {
-      "fire_laser": false,
-      "aim": null,
-      "items": [
-        {
-          "id": "obj_001",
-          "label": "lamp",
-          "azimuth_deg": 30.0,
-          "elevation_deg": -5.0,
-          "confidence": 0.45
-        }
-      ]
-    }
+aim() returns fire_laser, aim, and items. search_frames() adds result
+(status, bbox_px, center_px, image size, label) and the chosen JPEG.
 
 fire_laser is true only when the query status is found. aim is then
 {"azimuth_deg", "elevation_deg"} and is null otherwise. Azimuth 0 is pan
@@ -46,6 +33,6 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from vision.aim import aim
+from vision.aim import aim, search_frames
 
-__all__ = ["aim"]
+__all__ = ["aim", "search_frames"]

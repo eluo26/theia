@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import math
 import tempfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +30,7 @@ def aim(
     client_factory=None,
     detector=None,
     use_cache: bool = True,
+    on_progress: Callable[[dict], None] | None = None,
 ) -> dict:
     """Index live JPEG frames and return the laser payload.
 
@@ -55,8 +56,56 @@ def aim(
             client_factory=client_factory,
             detector=detector,
             use_cache=use_cache,
+            on_progress=on_progress,
         )
     return laser_payload(raw)
+
+
+def search_frames(
+    frames: Sequence[Mapping[str, Any]] | Mapping[str, Any],
+    query: str,
+    *,
+    settings: Settings | None = None,
+    client_factory=None,
+    detector=None,
+    use_cache: bool = True,
+    on_progress: Callable[[dict], None] | None = None,
+) -> dict:
+    """Index live JPEG frames and return aim plus the query box.
+
+    Same frame contract as aim(). The live search path uses Grok boxes only
+    unless a detector is passed in. frame_jpeg is the chosen photo, or None.
+    """
+    if not isinstance(query, str) or not query.strip():
+        raise IngestError("A question is required.")
+    prepared = _prepare_frames(frames)
+    settings = settings if settings is not None else load_settings()
+    require_api_key(settings)
+    if detector is None:
+        from vision.detector import NullDetector
+
+        detector = NullDetector()
+    with tempfile.TemporaryDirectory(prefix="theia-aim-") as directory:
+        scan_dir = _write_scan(Path(directory), prepared)
+        raw = answer(
+            scan_dir,
+            query.strip(),
+            settings=settings,
+            client_factory=client_factory,
+            detector=detector,
+            use_cache=use_cache,
+            on_progress=on_progress,
+        )
+        result = raw.get("result") if isinstance(raw.get("result"), Mapping) else {}
+        frame_jpeg = _chosen_frame_jpeg(Path(directory), prepared, result)
+    payload = laser_payload(raw)
+    return {
+        "fire_laser": payload["fire_laser"],
+        "aim": payload["aim"],
+        "items": payload["items"],
+        "result": _public_result(raw, result),
+        "frame_jpeg": frame_jpeg,
+    }
 
 
 def laser_payload(raw: Mapping[str, Any]) -> dict:
@@ -144,3 +193,51 @@ def _write_scan(directory: Path, frames: list[dict]) -> Path:
         encoding="utf-8",
     )
     return directory
+
+
+def _public_result(raw: Mapping[str, Any], result: Mapping[str, Any]) -> dict:
+    public = dict(result)
+    bbox = public.get("bbox_px")
+    if isinstance(bbox, list) and len(bbox) == 4:
+        try:
+            x1, y1, x2, y2 = (float(value) for value in bbox)
+        except (TypeError, ValueError):
+            x1 = y1 = x2 = y2 = None
+        if None not in (x1, y1, x2, y2):
+            public["center_px"] = [int(round((x1 + x2) / 2)), int(round((y1 + y2) / 2))]
+    object_id = public.get("object_id")
+    for item in raw.get("items") or []:
+        if not isinstance(item, Mapping):
+            continue
+        if item.get("id") != object_id and item.get("object_id") != object_id:
+            continue
+        width = item.get("image_width")
+        height = item.get("image_height")
+        if isinstance(width, int) and isinstance(height, int):
+            public["image_width"] = width
+            public["image_height"] = height
+        break
+    return public
+
+
+def _chosen_frame_jpeg(
+    directory: Path, prepared: list[dict], result: Mapping[str, Any]
+) -> bytes | None:
+    name = result.get("frame_file")
+    if isinstance(name, str) and name:
+        path = Path(name)
+        for candidate in (directory / path.name, path):
+            if candidate.is_file():
+                return candidate.read_bytes()
+        stem = path.stem
+        if stem.startswith("frame_"):
+            try:
+                index = int(stem.split("_")[1])
+            except (IndexError, ValueError):
+                index = -1
+            if 0 <= index < len(prepared):
+                return prepared[index]["image"]
+        return None
+    if prepared:
+        return prepared[0]["image"]
+    return None
