@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { apiFetch } from './api.js'
 
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
 
@@ -46,7 +47,7 @@ function InputScreen({ onSearchStarted }) {
     recognitionRef.current?.abort()
 
     try {
-      const response = await fetch('/api/search', {
+      const response = await apiFetch('/api/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query: text }),
@@ -96,6 +97,7 @@ function InputScreen({ onSearchStarted }) {
       </form>
 
       <p className="message" role="status">{message}</p>
+
     </main>
   )
 }

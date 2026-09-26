@@ -1,3 +1,7 @@
 __pycache__/
 .venv/
+.env
 captures/
+server/data/scans/
+server/data/auth.sqlite3*
+.env

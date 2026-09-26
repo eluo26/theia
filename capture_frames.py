@@ -5,61 +5,13 @@ Usage:
     python capture_frames.py --count 2 --interval 1.0 --out captures
 """
 import argparse
-import threading
 import time
 from datetime import datetime
 from pathlib import Path
 
 import cv2
 
-DEFAULT_URL = "http://172.20.10.1:4747/video"
-
-
-class LatestFrameReader:
-    """Reads the stream on a background thread and keeps only the newest frame.
-
-    OpenCV buffers network frames, so reading on demand can return a frame
-    from seconds ago. Draining the stream continuously avoids that.
-    """
-
-    def __init__(self, url):
-        self.cap = cv2.VideoCapture(url)
-        if not self.cap.isOpened():
-            raise RuntimeError(
-                f"Could not open stream at {url}. Is DroidCam open on the phone, "
-                "and is no other client (such as a browser tab) connected to it?"
-            )
-        self._lock = threading.Lock()
-        self._frame = None
-        self._frame_time = 0.0
-        self._running = True
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
-
-    def _run(self):
-        while self._running:
-            ok, frame = self.cap.read()
-            if not ok:
-                time.sleep(0.01)
-                continue
-            with self._lock:
-                self._frame = frame
-                self._frame_time = time.monotonic()
-
-    def read(self, newer_than=0.0, timeout=5.0):
-        """Return (frame, arrival_time) for a frame that arrived after `newer_than`."""
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            with self._lock:
-                if self._frame is not None and self._frame_time > newer_than:
-                    return self._frame.copy(), self._frame_time
-            time.sleep(0.005)
-        raise TimeoutError(f"No new frame from the stream within {timeout} s")
-
-    def close(self):
-        self._running = False
-        self._thread.join(timeout=2)
-        self.cap.release()
+from server.camera import DEFAULT_STREAM_URL, LatestFrameReader
 
 
 def capture(url, count, interval, out_dir):
@@ -89,7 +41,7 @@ def capture(url, count, interval, out_dir):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--url", default=DEFAULT_URL, help="DroidCam stream URL")
+    parser.add_argument("--url", default=DEFAULT_STREAM_URL, help="DroidCam stream URL")
     parser.add_argument("--count", type=int, default=2, help="number of pictures to take")
     parser.add_argument("--interval", type=float, default=1.0, help="seconds between pictures")
     parser.add_argument("--out", default="captures", help="folder to save pictures in")

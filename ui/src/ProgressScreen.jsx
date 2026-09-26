@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { apiFetch } from './api.js'
 
 const STAGES = [
   { key: 'scanning', label: 'Scanning' },
@@ -56,7 +57,7 @@ function ProgressScreen({ initialSearch, onDone }) {
     if (finished) return
     const timer = setInterval(async () => {
       try {
-        const response = await fetch(`/api/search/${initialSearch.id}`)
+        const response = await apiFetch(`/api/search/${initialSearch.id}`)
         if (!response.ok) throw new Error(`server returned ${response.status}`)
         setSearch(await response.json())
         setError('')

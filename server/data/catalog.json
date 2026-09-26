@@ -1,0 +1,110 @@
+[
+  {
+    "id": "cardiolex-10-mg-cx26a118",
+    "drug_name": "Cardiolex",
+    "strength": "10 mg",
+    "box_color": "red",
+    "ndc": "99001-0110-30",
+    "lot": "CX26A118",
+    "expiration_date": "2027-03-31",
+    "count": 12,
+    "shelf": "A",
+    "bin": 1
+  },
+  {
+    "id": "cardiolex-20-mg-cx26b042",
+    "drug_name": "Cardiolex",
+    "strength": "20 mg",
+    "box_color": "dark red",
+    "ndc": "99001-0120-30",
+    "lot": "CX26B042",
+    "expiration_date": "2027-01-31",
+    "count": 8,
+    "shelf": "A",
+    "bin": 2
+  },
+  {
+    "id": "glyvora-5-mg-gv26c305",
+    "drug_name": "Glyvora",
+    "strength": "5 mg",
+    "box_color": "blue",
+    "ndc": "99002-0205-14",
+    "lot": "GV26C305",
+    "expiration_date": "2027-06-30",
+    "count": 2,
+    "shelf": "B",
+    "bin": 1
+  },
+  {
+    "id": "lipidrel-20-mg-lp25k771",
+    "drug_name": "Lipidrel",
+    "strength": "20 mg",
+    "box_color": "yellow",
+    "ndc": "99003-0320-30",
+    "lot": "LP25K771",
+    "expiration_date": "2026-10-09",
+    "count": 15,
+    "shelf": "B",
+    "bin": 2
+  },
+  {
+    "id": "respiva-90-mcg-rs26d210",
+    "drug_name": "Respiva",
+    "strength": "90 mcg",
+    "box_color": "green",
+    "ndc": "99004-0490-01",
+    "lot": "RS26D210",
+    "expiration_date": "2027-08-31",
+    "count": 6,
+    "shelf": "C",
+    "bin": 1
+  },
+  {
+    "id": "neurazine-25-mg-nz25j564",
+    "drug_name": "Neurazine",
+    "strength": "25 mg",
+    "box_color": "purple",
+    "ndc": "99005-0525-28",
+    "lot": "NZ25J564",
+    "expiration_date": "2026-10-17",
+    "count": 10,
+    "shelf": "C",
+    "bin": 2
+  },
+  {
+    "id": "dermavel-0-1-dv26a089",
+    "drug_name": "Dermavel",
+    "strength": "0.1%",
+    "box_color": "white",
+    "ndc": "99006-0601-15",
+    "lot": "DV26A089",
+    "expiration_date": "2027-02-28",
+    "count": 9,
+    "shelf": "D",
+    "bin": 1
+  },
+  {
+    "id": "sertavin-50-mg-st26e447",
+    "drug_name": "Sertavin",
+    "strength": "50 mg",
+    "box_color": "orange",
+    "ndc": "99007-0750-30",
+    "lot": "ST26E447",
+    "expiration_date": "2027-05-31",
+    "count": 11,
+    "shelf": "D",
+    "bin": 2
+  },
+  {
+    "id": "zoravex-25-mg-zv26f101",
+    "drug_name": "ZORAVEX",
+    "strength": "25 mg",
+    "box_color": "off-white",
+    "ndc": "99008-0825-30",
+    "lot": "ZV26F101",
+    "expiration_date": "2027-04-30",
+    "count": 2,
+    "shelf": "1",
+    "bin": 3
+  }
+]

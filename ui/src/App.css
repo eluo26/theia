@@ -199,3 +199,278 @@
   color: white;
   cursor: pointer;
 }
+
+.primary-button:disabled {
+  background: #9ca3af;
+  cursor: wait;
+}
+
+.secondary-button {
+  padding: 0.6rem 1.25rem;
+  font-size: 1rem;
+  font-weight: 600;
+  border: 2px solid #d1d5db;
+  border-radius: 0.6rem;
+  background: white;
+  color: #111827;
+  cursor: pointer;
+}
+
+/* Stocking screen */
+
+.stock-screen {
+  position: relative;
+  justify-content: flex-start;
+  gap: 1.25rem;
+}
+
+.stock-start {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+  width: min(40rem, 100%);
+}
+
+.camera-preview {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 0.75rem;
+  background: #1f2937;
+  overflow: hidden;
+}
+
+.camera-preview.connecting,
+.camera-preview.offline {
+  background: #f3f4f6;
+  border: 2px dashed #d1d5db;
+}
+
+.camera-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.camera-preview img.hidden {
+  display: none;
+}
+
+.camera-status {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 1rem;
+  color: #9ca3af;
+}
+
+.camera-status p {
+  margin: 0;
+}
+
+.camera-status .camera-error {
+  font-weight: 600;
+  color: #6b7280;
+}
+
+.link-button {
+  margin-top: 0.25rem;
+  padding: 0;
+  border: none;
+  background: none;
+  font-size: 0.95rem;
+  color: #2563eb;
+  cursor: pointer;
+}
+
+.stock-hint {
+  margin: 0;
+  font-size: 1.1rem;
+  color: #4b5563;
+}
+
+.file-link {
+  font-size: 0.95rem;
+  color: #2563eb;
+  cursor: pointer;
+}
+
+.file-link input {
+  display: none;
+}
+
+.message.error {
+  color: #dc2626;
+}
+
+.scan-error {
+  width: min(40rem, 100%);
+  margin: 0;
+  padding: 0.85rem 1rem;
+  border: 1px solid #fecaca;
+  border-radius: 0.65rem;
+  background: #fef2f2;
+  color: #991b1b;
+  font-size: 1rem;
+  line-height: 1.45;
+  text-align: left;
+}
+
+.stock-review {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  gap: 2rem;
+  width: min(70rem, 100%);
+  text-align: left;
+}
+
+@media (max-width: 56rem) {
+  .stock-review {
+    grid-template-columns: 1fr;
+  }
+}
+
+.scan-column {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+
+.scan-photo {
+  width: 100%;
+  border-radius: 0.75rem;
+  border: 1px solid #e5e7eb;
+  background: #111827;
+}
+
+.scan-photo.small {
+  max-width: 20rem;
+}
+
+.fields-column {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.warnings {
+  margin: 0;
+  padding: 0.75rem 1rem 0.75rem 2rem;
+  border-radius: 0.6rem;
+  background: #fef3c7;
+  color: #92400e;
+  font-size: 0.95rem;
+}
+
+.field-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+  gap: 0.75rem 1rem;
+}
+
+.field-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #4b5563;
+}
+
+.field-grid input {
+  padding: 0.55rem 0.7rem;
+  font-size: 1rem;
+  font-weight: 400;
+  color: #111827;
+  border: 2px solid #d1d5db;
+  border-radius: 0.5rem;
+}
+
+.field-grid input:focus {
+  outline: none;
+  border-color: #2563eb;
+}
+
+.stock-done {
+  margin: 0;
+  font-size: 1.25rem;
+}
+
+/* Accounts */
+.auth-screen, .signed-in-app, .signed-in-app *, .auth-screen * {
+  box-sizing: border-box;
+}
+
+.auth-screen {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 2rem 1rem;
+}
+
+.auth-card {
+  width: min(29rem, 100%);
+  padding: clamp(1.25rem, 4vw, 2.25rem);
+  border: 1px solid #e5e7eb;
+  border-radius: 1.25rem;
+  background: white;
+  box-shadow: 0 12px 40px rgb(17 24 39 / 5%);
+}
+
+.auth-brand, .app-brand { font-weight: 750; color: #2563eb; }
+.auth-brand { margin: 0 0 1.5rem; font-size: 1.25rem; }
+.auth-card h1 { margin: 0; font-size: 1.8rem; }
+.auth-intro { color: #6b7280; margin: 0.5rem 0 1.5rem; }
+.auth-fields, .role-picker { border: 0; margin: 0; padding: 0; min-width: 0; }
+.auth-fields { display: flex; flex-direction: column; gap: 1rem; }
+.role-picker { display: grid; gap: 0.65rem; }
+.role-picker legend { font-weight: 600; padding: 0 0 0.6rem; }
+.role-option {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.85rem;
+  border: 2px solid #e5e7eb;
+  border-radius: 0.7rem;
+  cursor: pointer;
+}
+.role-option.selected { border-color: #2563eb; background: #eff6ff; }
+.role-option input { accent-color: #2563eb; margin: 0; }
+.role-option strong, .role-option small { display: block; }
+.role-option small { color: #4b5563; margin-top: 0.25rem; line-height: 1.4; }
+.auth-field { display: flex; flex-direction: column; gap: 0.4rem; font-weight: 600; }
+.auth-field input {
+  width: 100%;
+  padding: 0.8rem;
+  font: inherit;
+  font-weight: 400;
+  border: 2px solid #d1d5db;
+  border-radius: 0.6rem;
+}
+.auth-hint { font-size: 0.85rem; color: #6b7280; margin: -0.5rem 0 0; }
+.auth-error { color: #b91c1c; margin: 0; line-height: 1.5; }
+.auth-submit { width: 100%; font-size: 1.1rem; margin-top: 0.25rem; }
+.auth-switch { margin: 1.5rem 0 0; text-align: center; color: #4b5563; font-size: 0.95rem; }
+.auth-screen :focus-visible, .account-header :focus-visible { outline: 3px solid #2563eb; outline-offset: 3px; }
+.auth-fields:disabled, .account-header button:disabled { opacity: 0.65; }
+.signed-in-app { min-height: 100dvh; display: flex; flex-direction: column; }
+.signed-in-app > .screen { flex: 1; min-height: 0; }
+.account-header { display: flex; align-items: center; gap: 1.5rem; padding: 1rem 1.5rem; border-bottom: 1px solid #e5e7eb; background: white; flex-wrap: wrap; }
+.app-brand { text-decoration: none; font-size: 1.25rem; }
+.account-header nav { display: flex; gap: 0.4rem; }
+.account-header nav a { color: #4b5563; text-decoration: none; padding: 0.65rem 0.8rem; border-radius: 0.5rem; }
+.account-header nav a[aria-current] { color: #1d4ed8; background: #eff6ff; font-weight: 600; }
+.account-controls { display: flex; align-items: center; gap: 0.8rem; margin-left: auto; }
+.account-role { font-size: 0.9rem; color: #6b7280; }
+.account-error { padding: 1rem 1.5rem; }
+@media (max-width: 36rem) {
+  .account-header { gap: 0.75rem; padding: 0.8rem 1rem; }
+  .account-header nav { order: 3; width: 100%; }
+  .account-header nav a { flex: 1; text-align: center; }
+  .signed-in-app .screen { padding: 1.5rem 1rem; }
+}
