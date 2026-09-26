@@ -1,4 +1,4 @@
-"""Local demo accounts and revocable, cookie-based sessions."""
+"""Local patient accounts and revocable, cookie-based sessions."""
 import hashlib
 import re
 import secrets
@@ -27,7 +27,7 @@ def init_auth(app):
                 id INTEGER PRIMARY KEY,
                 email TEXT UNIQUE NOT NULL,
                 password_hash TEXT NOT NULL,
-                role TEXT NOT NULL CHECK(role IN ('patient', 'staff'))
+                role TEXT NOT NULL CHECK(role = 'patient')
             );
             CREATE TABLE IF NOT EXISTS sessions (
                 token_hash TEXT PRIMARY KEY,
@@ -47,15 +47,15 @@ def init_auth(app):
         body = request.get_json(silent=True)
         if not isinstance(body, dict):
             return None
-        email, password, role = (body.get(key) for key in ("email", "password", "role"))
-        if not all(isinstance(value, str) for value in (email, password, role)):
+        email, password = (body.get(key) for key in ("email", "password"))
+        if not all(isinstance(value, str) for value in (email, password)):
             return None
         email = email.strip().lower()
         if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email) or len(email) > 254:
             return None
-        if role not in ("patient", "staff") or not 8 <= len(password) <= 128:
+        if body.get("role", "patient") != "patient" or not 8 <= len(password) <= 128:
             return None
-        return email, password, role
+        return email, password
 
     def signed_in(db, user, status=200):
         token = secrets.token_urlsafe(32)
@@ -88,7 +88,7 @@ def init_auth(app):
             db = connect()
             try:
                 row = db.execute("""SELECT users.* FROM sessions JOIN users ON users.id = sessions.user_id
-                                    WHERE token_hash = ? AND expires_at > ?""",
+                                    WHERE token_hash = ? AND expires_at > ? AND users.role = 'patient'""",
                                  (token_hash(), time.time())).fetchone()
                 if row:
                     g.user = public_user(row)
@@ -98,9 +98,6 @@ def init_auth(app):
             return None
         if g.user is None:
             return jsonify(error="Please log in to continue."), 401
-        if (request.path.startswith("/api/stock/") or request.path in
-                ("/api/catalog", "/api/camera/preview")) and g.user["role"] != "staff":
-            return jsonify(error="This feature is available to staff accounts only."), 403
 
     @app.after_request
     def private_responses(response):
@@ -112,17 +109,17 @@ def init_auth(app):
     def register():
         values = credentials()
         if values is None:
-            return jsonify(error="Enter a valid email, an 8–128 character password, and an account type."), 400
-        email, password, role = values
+            return jsonify(error="Enter a valid email and an 8–128 character password."), 400
+        email, password = values
         db = connect()
         try:
             with db:
                 try:
                     cursor = db.execute("INSERT INTO users (email, password_hash, role) VALUES (?, ?, ?)",
-                                        (email, generate_password_hash(password), role))
+                                        (email, generate_password_hash(password), "patient"))
                 except sqlite3.IntegrityError:
                     return jsonify(error="An account with this email already exists. Log in instead."), 409
-                return signed_in(db, {"id": cursor.lastrowid, "email": email, "role": role}, 201)
+                return signed_in(db, {"id": cursor.lastrowid, "email": email, "role": "patient"}, 201)
         finally:
             db.close()
 
@@ -130,14 +127,14 @@ def init_auth(app):
     def login():
         values = credentials()
         if values is None:
-            return jsonify(error="Check your email, password, and account type."), 401
-        email, password, role = values
+            return jsonify(error="Check your email and password."), 401
+        email, password = values
         db = connect()
         try:
             with db:
-                user = db.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
-                if not user or not check_password_hash(user["password_hash"], password) or user["role"] != role:
-                    return jsonify(error="Check your email, password, and account type."), 401
+                user = db.execute("SELECT * FROM users WHERE email = ? AND role = 'patient'", (email,)).fetchone()
+                if not user or not check_password_hash(user["password_hash"], password):
+                    return jsonify(error="Check your email and password."), 401
                 return signed_in(db, user)
         finally:
             db.close()

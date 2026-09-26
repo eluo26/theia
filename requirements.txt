@@ -1,5 +1,2 @@
 opencv-python
 flask
-openai
-python-dotenv
-python-dotenv
