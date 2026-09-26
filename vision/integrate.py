@@ -43,6 +43,7 @@ def answer(
         use_cache=use_cache,
         save_debug=save_debug,
         on_progress=on_progress,
+        query=query,
     )
     if on_progress is not None:
         on_progress({"phase": "matching", "done": 0, "total": 1})

@@ -28,6 +28,57 @@ def side_view_core(label: str) -> str:
     return label
 
 
+_COLOR_TOKENS = {
+    "black",
+    "blue",
+    "brown",
+    "gold",
+    "gray",
+    "green",
+    "grey",
+    "orange",
+    "pink",
+    "purple",
+    "red",
+    "silver",
+    "white",
+    "yellow",
+}
+
+
+def label_query_score(query: str, label: str, drug_name: str | None = None) -> float:
+    """Best token score of the question against a label, its side-view core, or drug name."""
+    names = [label]
+    if drug_name:
+        names.append(drug_name)
+    core = side_view_core(label)
+    if core.casefold() != label.casefold():
+        names.append(core)
+    return max(token_ratio(match_text(query), match_text(name)) for name in names)
+
+
+def query_label_close(query: str, label: str, drug_name: str | None, label_sim: float) -> bool:
+    """True when a detection could answer the question.
+
+    The score uses the catalog label threshold. A color word in the question
+    that contradicts the label is not close: "blue water bottle" must not keep
+    a black water bottle just because the other words match.
+    """
+    if _color_conflict(query, label):
+        return False
+    return label_query_score(query, label, drug_name) >= label_sim
+
+
+def _color_conflict(query: str, label: str) -> bool:
+    query_colors = set(match_text(query).casefold().split()) & _COLOR_TOKENS
+    if not query_colors:
+        return False
+    label_colors = set(match_text(label).casefold().split()) & _COLOR_TOKENS
+    if not label_colors:
+        return False
+    return query_colors.isdisjoint(label_colors)
+
+
 def same_label_family(left: str, right: str, label_sim: float) -> bool:
     """True when two labels are the same object at the existing threshold.
 

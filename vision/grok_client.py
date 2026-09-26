@@ -34,10 +34,28 @@ _cache_lock = threading.Lock()
 
 logger = logging.getLogger("vision.client")
 
-def index_prompt(max_objects: int) -> str:
-    """Short scene list. A cap keeps the later question small enough to answer quickly."""
+def index_prompt(max_objects: int, query: str | None = None) -> str:
+    """Short scene list. A cap keeps the later question small enough to answer quickly.
+
+    A query asks for objects that could be what the user is looking for.
+    Omitting it keeps the full-scene prompt used by offline indexing.
+    """
+    question = " ".join(query.split()) if isinstance(query, str) and query.strip() else None
+    if question:
+        shown = question.replace('"', "'")
+        listing = (
+            f'The user is looking for: "{shown}". '
+            "List visible objects that could be what they asked for. "
+            "Include the same kind of object when color, brand, or other details are uncertain. "
+            "A short label is fine. Do not leave an object out only because you cannot confirm every word. "
+            f"At most {max_objects}."
+        )
+    else:
+        listing = (
+            f"List the distinct objects a person might ask you to find. At most {max_objects}."
+        )
     return f"""You are the scene-understanding module for a tabletop laser turret.
-List the distinct objects a person might ask you to find. At most {max_objects}.
+{listing}
 Skip walls, the floor, the ceiling, the bare table, shadows, and small background clutter.
 
 For each object provide:

@@ -15,9 +15,9 @@ from vision import grok_client
 from vision.clinic import match_inventory
 from vision.config import REPO_ROOT, Settings, load_settings, require_api_key
 from vision.detector import tighter_agreeing_box
-from vision.geometry import box_center_angles
+from vision.geometry import angular_distance_deg, box_center_angles
 from vision.grok_client import GrokCallError, redact
-from vision.matching import match_text, same_label_family, side_view_core, token_ratio
+from vision.matching import match_text, query_label_close
 from vision.preprocess import encode_png
 from vision.references import reference_note
 from vision.schemas import (
@@ -308,20 +308,25 @@ def _collapse_same_kind(
     catalog: Catalog,
     settings: Settings,
 ) -> QueryDecision:
-    """Aim at the best view when one kind of object was recognized more than once.
+    """Aim at the best view when every match sits within merge_deg.
 
-    Two photos of a laptop used to stay ambiguous, so the laser would not point.
-    Same labels (the configured rapidfuzz threshold) collapse to the
-    highest-confidence candidate. A left view and a right view of one object
-    count as the same label. Different objects stay ambiguous.
+    Two photos of one object used to stay ambiguous, so the laser would not
+    point. Matches farther apart than merge_deg stay ambiguous: that is a
+    second instance, such as two blue water bottles.
     """
-    if decision.status != "ambiguous" or not _same_kind(candidates, catalog, settings.label_sim):
+    if decision.status != "ambiguous":
+        return decision
+    objects = _candidate_objects(candidates, catalog)
+    if len(objects) < 2 or _spatially_distinct(objects, settings.merge_deg):
         return decision
     by_id = catalog_object_map(catalog)
-    best = max(candidates, key=lambda item: (item.confidence, by_id[item.object_id].confidence))
-    note = "Same kind of object in more than one photo; aiming at the highest-confidence view."
+    best = max(
+        (item for item in candidates if item.object_id in by_id),
+        key=lambda item: (item.confidence, by_id[item.object_id].confidence),
+    )
+    note = "Close matches; aiming at the highest-confidence view."
     reason = decision.reason if note in decision.reason else f"{decision.reason} {note}".strip()
-    logger.info("collapsed %s same-kind candidates to %s", len(candidates), best.object_id)
+    logger.info("collapsed %s close candidates to %s", len(objects), best.object_id)
     return decision.model_copy(
         update={
             "status": "found",
@@ -332,50 +337,9 @@ def _collapse_same_kind(
     )
 
 
-def _same_kind(candidates, catalog: Catalog, label_sim: float) -> bool:
-    if len(candidates) < 2:
-        return False
-    by_id = catalog_object_map(catalog)
-    if len({item.object_id for item in candidates}) == 1:
-        return True
-    labels = [by_id[item.object_id].label for item in candidates]
-    for index, left in enumerate(labels):
-        for right in labels[index + 1 :]:
-            if not same_label_family(left, right, label_sim):
-                return False
-    return True
-
-
 def _is_relational(query: str) -> bool:
     text = match_text(query).casefold()
     return any(phrase in text for phrase in _RELATIONAL_PHRASES)
-
-
-def _name_score(query: str, name: str) -> float:
-    return token_ratio(match_text(query), match_text(name))
-
-
-def _object_names(obj: CatalogObject) -> list[str]:
-    names = [obj.label]
-    if obj.drug_name:
-        names.append(obj.drug_name)
-    core = side_view_core(obj.label)
-    if core.casefold() != obj.label.casefold():
-        names.append(core)
-    return names
-
-
-def _object_score(query: str, obj: CatalogObject) -> float:
-    return max(_name_score(query, name) for name in _object_names(obj))
-
-
-def _objects_same_family(objects: list[CatalogObject], label_sim: float) -> bool:
-    labels = [obj.label for obj in objects]
-    for index, left in enumerate(labels):
-        for right in labels[index + 1 :]:
-            if not same_label_family(left, right, label_sim):
-                return False
-    return True
 
 
 def _direct_catalog_decision(
@@ -386,11 +350,17 @@ def _direct_catalog_decision(
     """Answer from catalog labels when the question names them.
 
     Relational questions and category questions that do not literally match a
-    label or drug name return None so the text model still runs.
+    label or drug name return None so the text model still runs. One ranking
+    pass decides among the close matches: nearby views become one aim point,
+    and matches farther apart than merge_deg stay ambiguous.
     """
     if _is_relational(query):
         return None
-    hits = [obj for obj in catalog.objects if _object_score(query, obj) >= settings.label_sim]
+    hits = [
+        obj
+        for obj in catalog.objects
+        if query_label_close(query, obj.label, obj.drug_name, settings.label_sim)
+    ]
     if not hits:
         return None
     ranked = sorted(hits, key=lambda obj: obj.confidence, reverse=True)
@@ -403,28 +373,53 @@ def _direct_catalog_decision(
         )
         for obj in ranked[:3]
     ]
-    if not _objects_same_family(hits, settings.label_sim):
+    best = ranked[0]
+    if len(hits) == 1 or not _spatially_distinct(hits, settings.merge_deg):
+        reason = "Matched the catalog label."
+        if len(hits) > 1:
+            reason = f"{reason} Aiming at the highest-confidence view."
         return QueryDecision(
-            status="ambiguous",
-            object_id=None,
-            confidence=ranked[0].confidence,
-            reason="More than one different catalog object matches the question.",
+            status="found",
+            object_id=best.object_id,
+            confidence=best.confidence,
+            reason=reason,
             candidates=candidates,
         )
-    best = ranked[0]
-    reason = "Matched the catalog label."
-    if len(hits) > 1:
-        reason = (
-            f"{reason} Same kind of object in more than one photo; "
-            "aiming at the highest-confidence view."
-        )
     return QueryDecision(
-        status="found",
-        object_id=best.object_id,
+        status="ambiguous",
+        object_id=None,
         confidence=best.confidence,
-        reason=reason,
+        reason="More than one catalog object matches the question.",
         candidates=candidates,
     )
+
+
+def _candidate_objects(candidates, catalog: Catalog) -> list[CatalogObject]:
+    by_id = catalog_object_map(catalog)
+    objects: list[CatalogObject] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        obj = by_id.get(candidate.object_id)
+        if obj is None or obj.object_id in seen:
+            continue
+        seen.add(obj.object_id)
+        objects.append(obj)
+    return objects
+
+
+def _spatially_distinct(objects: list[CatalogObject], merge_deg: float) -> bool:
+    """True when any pair is farther apart than the merge angle."""
+    for index, left in enumerate(objects):
+        for right in objects[index + 1 :]:
+            separation = angular_distance_deg(
+                left.azimuth_deg,
+                left.elevation_deg,
+                right.azimuth_deg,
+                right.elevation_deg,
+            )
+            if separation > merge_deg:
+                return True
+    return False
 
 
 def _resolve(decision: QueryDecision, catalog: Catalog) -> CatalogObject | None:

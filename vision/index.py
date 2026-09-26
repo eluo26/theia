@@ -29,7 +29,7 @@ from vision.ingest import (
     no_images_message,
     still_frame_meta,
 )
-from vision.matching import token_ratio
+from vision.matching import label_query_score, match_text, token_ratio
 from vision.preprocess import Tile, encode_jpeg, make_tiles, prepare_frame, shift_box
 from vision.schemas import (
     Catalog,
@@ -55,9 +55,15 @@ def build_catalog(
     use_cache: bool = True,
     save_debug: bool | None = None,
     on_progress: Callable[[dict], None] | None = None,
+    query: str | None = None,
 ) -> Catalog:
-    """Index angle-tagged photos (or one sweep video) and write catalog.json."""
+    """Index angle-tagged photos (or one sweep video) and write catalog.json.
+
+    query scopes each vision call to objects that could answer that question.
+    Offline indexing leaves it unset and keeps a full scene catalog.
+    """
     settings = settings if settings is not None else load_settings()
+    question = _normalize_query(query)
     source = Path(scan_dir)
     reused: list[Detection] = []
     frame_memories: list[FrameMemory] = []
@@ -68,7 +74,7 @@ def build_catalog(
                 "--sweep and --angles-csv apply to a video file, not an image folder."
             )
         frames, reused, frame_memories, pending = _load_changed_stills(
-            source, settings, use_cache=use_cache
+            source, settings, use_cache=use_cache, query=question
         )
     else:
         frames = load_scan(
@@ -97,6 +103,7 @@ def build_catalog(
             detector=chosen,
             use_cache=use_cache,
             on_progress=on_progress,
+            query=question,
         )
     if failed:
         fresh = [item for item in fresh if item.frame_file not in failed]
@@ -111,7 +118,9 @@ def build_catalog(
         objects=objects,
         created_at=created_at,
         scan_dir=str(scan_path),
-        fingerprint=scan_fingerprint(source, settings, sweep=sweep, angles_csv=angles_csv),
+        fingerprint=scan_fingerprint(
+            source, settings, sweep=sweep, angles_csv=angles_csv, query=question
+        ),
         frames=sorted(frame_memories, key=lambda item: item.source_file),
     )
     write_catalog(catalog, settings.out_path / "catalog.json")
@@ -183,6 +192,56 @@ def write_catalog(catalog: Catalog, path: Path) -> Path:
     return path
 
 
+# Below the catalog match threshold on purpose. Indexing should keep plausible
+# labels ("plastic bottle") for the final ranking pass, and only drop objects
+# that do not resemble the question at all.
+_INDEX_SCORE_FLOOR = 45
+
+
+def filter_indexed_for_query(objects, query: str | None, label_sim: float):
+    """Drop indexed objects that are clearly unrelated to the question.
+
+    Color conflicts stay in the catalog so a mislabeled bottle is not deleted
+    before ranking. When nothing is even loosely related, keep the whole list
+    so a category question still has objects to rank.
+    """
+    question = _normalize_query(query)
+    if question is None:
+        return list(objects)
+    floor = min(float(label_sim), _INDEX_SCORE_FLOOR)
+    kept = [
+        obj
+        for obj in objects
+        if _index_candidate(question, obj.label, getattr(obj, "drug_name", None), floor)
+    ]
+    if not kept:
+        return list(objects)
+    return kept
+
+
+def _index_candidate(query: str, label: str, drug_name: str | None, floor: float) -> bool:
+    if label_query_score(query, label, drug_name) >= floor:
+        return True
+    return _shares_query_token(query, label, drug_name)
+
+
+def _shares_query_token(query: str, label: str, drug_name: str | None) -> bool:
+    tokens = {token for token in match_text(query).casefold().split() if len(token) >= 4}
+    if not tokens:
+        return False
+    names = match_text(label)
+    if drug_name:
+        names = f"{names} {match_text(drug_name)}"
+    return bool(tokens & set(names.casefold().split()))
+
+
+def _normalize_query(query: str | None) -> str | None:
+    if not isinstance(query, str):
+        return None
+    text = " ".join(query.split())
+    return text or None
+
+
 def catalog_for_query(
     scan_dir: str | Path,
     *,
@@ -194,11 +253,15 @@ def catalog_for_query(
     use_cache: bool = True,
     save_debug: bool | None = None,
     on_progress: Callable[[dict], None] | None = None,
+    query: str | None = None,
 ) -> Catalog:
-    """Reuse catalog.json when the photos and indexing settings have not changed."""
+    """Reuse catalog.json when the photos, query, and indexing settings have not changed."""
     settings = settings if settings is not None else load_settings()
+    question = _normalize_query(query)
     source = Path(scan_dir)
-    fingerprint = scan_fingerprint(source, settings, sweep=sweep, angles_csv=angles_csv)
+    fingerprint = scan_fingerprint(
+        source, settings, sweep=sweep, angles_csv=angles_csv, query=question
+    )
     catalog_path = settings.out_path / "catalog.json"
     write_debug = settings.save_debug if save_debug is None else save_debug
     if use_cache and not write_debug and catalog_path.is_file():
@@ -222,6 +285,7 @@ def catalog_for_query(
         use_cache=use_cache,
         save_debug=save_debug,
         on_progress=on_progress,
+        query=question,
     )
 
 
@@ -231,15 +295,19 @@ def scan_fingerprint(
     *,
     sweep: tuple[float, float, float] | None,
     angles_csv: str | Path | None,
+    query: str | None = None,
 ) -> str:
     """Hash the scan files and the settings that change what the catalog contains."""
+    question = _normalize_query(query)
     digest = hashlib.sha256()
     digest.update(settings.fast_model.encode("utf-8"))
     digest.update(settings.image_detail.encode("utf-8"))
     digest.update(repr(tuple(settings.tile_grid)).encode("utf-8"))
     digest.update(str(settings.api_max_edge).encode("utf-8"))
     digest.update(str(settings.max_objects_per_image).encode("utf-8"))
-    digest.update(grok_client.index_prompt(settings.max_objects_per_image).encode("utf-8"))
+    prompt = grok_client.index_prompt(settings.max_objects_per_image, query=question)
+    digest.update(prompt.encode("utf-8"))
+    digest.update((question or "").encode("utf-8"))
     digest.update(repr(sweep).encode("utf-8"))
     if angles_csv is not None:
         _hash_file(digest, Path(angles_csv))
@@ -276,15 +344,19 @@ def frame_fingerprint(
     pan: float,
     tilt: float,
     timestamp: str | None,
+    query: str | None = None,
 ) -> str:
     """Identity of one photo plus the settings that change how it is indexed."""
+    question = _normalize_query(query)
     digest = hashlib.sha256()
     digest.update(settings.fast_model.encode("utf-8"))
     digest.update(settings.image_detail.encode("utf-8"))
     digest.update(repr(tuple(settings.tile_grid)).encode("utf-8"))
     digest.update(str(settings.api_max_edge).encode("utf-8"))
     digest.update(str(settings.max_objects_per_image).encode("utf-8"))
-    digest.update(grok_client.index_prompt(settings.max_objects_per_image).encode("utf-8"))
+    prompt = grok_client.index_prompt(settings.max_objects_per_image, query=question)
+    digest.update(prompt.encode("utf-8"))
+    digest.update((question or "").encode("utf-8"))
     digest.update(repr((pan, tilt, timestamp)).encode("utf-8"))
     _hash_file(digest, path)
     return digest.hexdigest()
@@ -295,6 +367,7 @@ def _load_changed_stills(
     settings: Settings,
     *,
     use_cache: bool,
+    query: str | None = None,
 ) -> tuple[list[LoadedFrame], list[Detection], list[FrameMemory], list[tuple[str, str]]]:
     """Decode and return only stills whose file or angle tag is not already remembered."""
     meta = still_frame_meta(source)
@@ -306,7 +379,9 @@ def _load_changed_stills(
     pending: list[tuple[str, str]] = []
     changed_meta = []
     for path, pan, tilt, timestamp in meta:
-        fingerprint = frame_fingerprint(path, settings, pan=pan, tilt=tilt, timestamp=timestamp)
+        fingerprint = frame_fingerprint(
+            path, settings, pan=pan, tilt=tilt, timestamp=timestamp, query=query
+        )
         previous = stored.get(path.name)
         if previous is not None and previous.fingerprint == fingerprint:
             reused.extend(previous.detections)
@@ -364,6 +439,7 @@ def _index_tiles(
     detector,
     use_cache: bool,
     on_progress: Callable[[dict], None] | None = None,
+    query: str | None = None,
 ) -> tuple[list[Detection], set[str]]:
     if not tiles:
         return [], set()
@@ -374,7 +450,9 @@ def _index_tiles(
     done = 0
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = [
-            pool.submit(_safe_index_tile, tile, settings, client_factory, detector, use_cache)
+            pool.submit(
+                _safe_index_tile, tile, settings, client_factory, detector, use_cache, query
+            )
             for tile in tiles
         ]
         for future in as_completed(futures):
@@ -392,11 +470,15 @@ def _index_tiles(
 
 
 def _safe_index_tile(
-    tile: Tile, settings, client_factory, detector, use_cache: bool
+    tile: Tile, settings, client_factory, detector, use_cache: bool, query: str | None = None
 ) -> tuple[str, list[Detection], bool]:
     frame_file = tile.frame.source_file
     try:
-        return frame_file, _index_tile(tile, settings, client_factory, detector, use_cache), True
+        return (
+            frame_file,
+            _index_tile(tile, settings, client_factory, detector, use_cache, query),
+            True,
+        )
     except GrokCallError as exc:
         logger.warning(
             "skipping tile %s offset=%s,%s error=%s",
@@ -408,20 +490,24 @@ def _safe_index_tile(
         return frame_file, [], False
 
 
-def _index_tile(tile: Tile, settings, client_factory, detector, use_cache: bool) -> list[Detection]:
+def _index_tile(
+    tile: Tile, settings, client_factory, detector, use_cache: bool, query: str | None = None
+) -> list[Detection]:
+    question = _normalize_query(query)
     encoded = encode_jpeg(tile.image)
     parsed, _cache = grok_client.parse_image_bytes(
         encoded,
         "image/jpeg",
         settings,
-        prompt=grok_client.index_prompt(settings.max_objects_per_image),
+        prompt=grok_client.index_prompt(settings.max_objects_per_image, query=question),
         response_model=IndexResponse,
         model=settings.fast_model,
         client_factory=client_factory,
         use_cache=use_cache,
     )
     frame = tile.frame
-    ranked = sorted(parsed.objects, key=lambda obj: _norm_area(obj.box), reverse=True)
+    scoped = filter_indexed_for_query(parsed.objects, question, settings.label_sim)
+    ranked = sorted(scoped, key=lambda obj: _norm_area(obj.box), reverse=True)
     detections: list[Detection] = []
     for obj in ranked[: settings.max_objects_per_image]:
         grok_tile = list(norm_box_to_pixels(obj.box, tile.width, tile.height))
