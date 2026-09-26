@@ -1,0 +1,90 @@
+# Vision module configuration.
+# provider selects the API. Switching back to OpenAI is a config change.
+# Model ids are read from here only. If a call fails, fix these values from the
+# docs. Do not invent a replacement id in code.
+
+provider: xai
+
+# OpenAI model ids read on 2026-09-26.
+# https://developers.openai.com/api/docs/models
+# gpt-6-luna: image input, structured outputs, Chat Completions. Efficient model
+# for high-volume work. https://developers.openai.com/api/docs/models/gpt-6-luna
+# gpt-6-astra: image input, structured outputs, Chat Completions. Flagship
+# reasoning model. https://developers.openai.com/api/docs/models/gpt-6-astra
+# Structured outputs: client.chat.completions.parse(..., response_format=Model)
+# https://developers.openai.com/api/docs/guides/structured-outputs
+# Image input uses image_url with a data URL.
+# File types: PNG, JPEG, WEBP, and non-animated GIF.
+# Detail values: low, high, original, auto. The sizing table lists all four for
+# gpt-6-astra. https://platform.openai.com/docs/guides/images-vision
+openai_base_url: https://api.openai.com/v1
+openai_api_key_env: OPENAI_API_KEY
+openai_fast_model: gpt-6-luna
+openai_reasoning_model: gpt-6-astra
+
+# xAI, used when provider is xai. Ids read from the xAI docs on 2026-09-26.
+# https://docs.x.ai/developers/models
+# https://docs.x.ai/developers/models/grok-4.3
+# https://docs.x.ai/developers/models/grok-4.7
+grok_fast_model: grok-4.3
+grok_reasoning_model: grok-4.7
+xai_base_url: https://api.x.ai/v1
+xai_api_key_env: XAI_API_KEY
+
+# Chat Completions image detail. OpenAI documents auto, low, high, and original.
+# low is the fast path: fewer image tokens, shorter calls.
+# https://platform.openai.com/docs/guides/images-vision
+image_detail: low
+
+# Client timeout in seconds. Reasoning models can take a while.
+request_timeout_s: 3600
+
+# Local cap on one image. OpenAI documents a 512 MB total request payload.
+# https://platform.openai.com/docs/guides/images-vision
+max_image_bytes: 20971520
+
+# Camera. Replace width, height, and FOV after you measure the real lens.
+# Optional fx, fy, cx, cy and dist_coeffs override the FOV when set.
+image_width: 4032
+image_height: 3024
+hfov_deg: 70
+vfov_deg: 55
+fx: null
+fy: null
+cx: null
+cy: null
+dist_coeffs: null
+
+# One call per photo. A 2x2 grid is available when small label text matters.
+tile_grid: [1, 1]
+tile_overlap: 0.15
+max_concurrency: 8
+# Longest side sent to the vision model. Boxes are mapped back to the original photo.
+api_max_edge: 768
+max_objects_per_image: 12
+# Questions use the fast model so a follow-up stays short. Set reasoning to use the flagship.
+query_model: fast
+save_debug: false
+verify_match: false
+refine_iou: 0.3
+label_sim: 85
+merge_deg: 8
+video_sample_every_s: 0.5
+blur_threshold: 100
+crop_pad: 0.15
+clinic_mode: false
+
+# Local open-vocabulary detector. Swappable. Weights download on first use.
+detector: owlv2
+owlv2_model: google/owlv2-base-patch16-ensemble
+grounding_dino_model: IDEA-Research/grounding-dino-tiny
+
+cache_dir: data/cache
+out_dir: data/out
+
+# Client retry policy. These are not API parameters.
+# Transport retries cover connection failures, timeouts, and HTTP 408/429/5xx.
+# HTTP 400 and 401 are not retried. Validation retries cover schema mismatches.
+max_transport_retries: 3
+retry_base_delay_s: 1.0
+validation_retries: 1

@@ -5,3 +5,7 @@ captures/
 server/data/scans/
 server/data/auth.sqlite3*
 .env
+
+# Vision pipeline output. Do not commit.
+data/cache/
+data/out/
