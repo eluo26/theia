@@ -19,6 +19,8 @@ Theia is a HackGT 13 object finder. A user asks where an item is; the future cam
 
 ## Team and hardware context
 
+`server/laser.py` implements a red laser off/on detector with optional camera alignment and a pixel-space correction step. `laser_test.py` logs results without UI or motor integration. Run `python laser_test.py --off "captures/Laser Off.png" --on "captures/Laser On.png" --target 1410 2333` for the local example. The target is a manually estimated center of the white electrical outlet in the 3024x4032 laser-on image. Coordinates use x right/y down; correction is target minus dot; the default stop radius is 5 pixels. Recompute after each future motor nudge using fresh frames and a target in the same coordinate system. Pixel-to-motor calibration remains separate.
+
 The camera is an iPhone running DroidCam over its hotspot, commonly at `http://172.20.10.1:4747/video`. The Arduino connects by USB; motors need separate battery power, and a transistor switches the laser. Person B is the hardware point of contact.
 
 The teammate's vision module takes angle-tagged scan photos and a query, then returns object status, a bounding box, azimuth, and elevation. The proposed convention is azimuth 0 at pan home, positive right; elevation 0 horizontal, positive up. Confirm the final JSON contract and calibration before integration. `ambiguous` and `not_found` results must not activate the laser. The real scan, turret control, laser detection, and correction loop are not yet integrated here.
