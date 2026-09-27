@@ -70,6 +70,7 @@ def search_frames(
     detector=None,
     use_cache: bool = True,
     on_progress: Callable[[dict], None] | None = None,
+    scan_dir: Path | None = None,
 ) -> dict:
     """Index live JPEG frames and return aim plus the query box.
 
@@ -85,10 +86,10 @@ def search_frames(
         from vision.detector import NullDetector
 
         detector = NullDetector()
-    with tempfile.TemporaryDirectory(prefix="theia-aim-") as directory:
-        scan_dir = _write_scan(Path(directory), prepared)
+
+    def _search(directory: Path) -> dict:
         raw = answer(
-            scan_dir,
+            directory,
             query.strip(),
             settings=settings,
             client_factory=client_factory,
@@ -97,15 +98,21 @@ def search_frames(
             on_progress=on_progress,
         )
         result = raw.get("result") if isinstance(raw.get("result"), Mapping) else {}
-        frame_jpeg = _chosen_frame_jpeg(Path(directory), prepared, result)
-    payload = laser_payload(raw)
-    return {
-        "fire_laser": payload["fire_laser"],
-        "aim": payload["aim"],
-        "items": payload["items"],
-        "result": _public_result(raw, result),
-        "frame_jpeg": frame_jpeg,
-    }
+        frame_jpeg = _chosen_frame_jpeg(directory, prepared, result)
+        payload = laser_payload(raw)
+        return {
+            "fire_laser": payload["fire_laser"],
+            "aim": payload["aim"],
+            "items": payload["items"],
+            "result": _public_result(raw, result),
+            "frame_jpeg": frame_jpeg,
+        }
+
+    if scan_dir is not None:
+        return _search(Path(scan_dir))
+    with tempfile.TemporaryDirectory(prefix="theia-aim-") as directory:
+        written = _write_scan(Path(directory), prepared)
+        return _search(written)
 
 
 def laser_payload(raw: Mapping[str, Any]) -> dict:

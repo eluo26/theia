@@ -14,7 +14,13 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from camera import CameraError
-from scan import ScanStoreError, capture_scan, default_scans_root, load_saved_scan, save_scan
+from scan import (
+    ScanStoreError,
+    capture_scan,
+    default_scans_root,
+    load_saved_scan,
+    save_scan,
+)
 from vision.aim import search_frames
 from vision.config import MissingAPIKeyError
 from vision.grok_client import GrokCallError, redact
@@ -23,6 +29,7 @@ from vision.ingest import IngestError
 logger = logging.getLogger("object_search")
 
 _BOX_COLOR = (64, 140, 32)
+_CIRCLE_COLOR = (37, 99, 235)
 
 
 def public_search(search):
@@ -59,6 +66,8 @@ def annotate_detection(jpeg_bytes, bbox_px, label=None):
         return jpeg_bytes
     cv2.rectangle(image, (x1, y1), (x2, y2), _BOX_COLOR, 3)
     center = ((x1 + x2) // 2, (y1 + y2) // 2)
+    radius = max(int(round(math.hypot(x2 - x1, y2 - y1) / 2)), 12)
+    cv2.circle(image, center, radius, _CIRCLE_COLOR, 3)
     cv2.drawMarker(image, center, _BOX_COLOR, cv2.MARKER_CROSS, 28, 2)
     if label:
         text_origin = (x1, max(28, y1 - 12))
@@ -79,18 +88,19 @@ def annotate_detection(jpeg_bytes, bbox_px, label=None):
 def run_object_search(
     search_id, query, update, *, capture=None, locate=None, save_dir=None, replay_dir=None
 ):
-    """Capture a handheld scan, then ask the vision module where the object is.
+    """Capture a new handheld scan, then ask the vision module where the object is.
 
-    A camera capture is written under server/data/scans so the same photos can
-    be sent through the pipeline again. replay_dir loads one of those folders
-    and skips the camera.
+    Every camera search takes a fresh set of photos. replay_dir loads one
+    folder and skips the camera.
     """
     using_camera = capture is None and replay_dir is None
     capture = capture_scan if capture is None else capture
     locate = search_frames if locate is None else locate
 
+    loading_saved = replay_dir is not None
+
     def on_frame(taken, total, *_rest):
-        action = "Loading saved photo" if replay_dir is not None else "Capturing photo"
+        action = "Loading saved photo" if loading_saved else "Capturing photo"
         update(
             search_id,
             photos_taken=taken,
@@ -99,6 +109,7 @@ def run_object_search(
             progress_pct=int(round(100 * taken / max(total, 1))),
         )
 
+    saved_dir = Path(replay_dir) if replay_dir is not None else None
     try:
         if replay_dir is not None:
             frames = load_saved_scan(replay_dir)
@@ -122,13 +133,14 @@ def run_object_search(
         return
 
     frame_count = len(frames)
-    if using_camera or save_dir is not None:
+    if saved_dir is None and (using_camera or save_dir is not None):
         root = default_scans_root() if save_dir is None else Path(save_dir)
         try:
             saved = save_scan(frames, root, query=query)
         except ScanStoreError as exc:
             logger.warning("could not save scan: %s", exc)
         else:
+            saved_dir = saved
             print(f"Saved scan: {saved}")
             update(search_id, saved_scan=str(saved))
     if not update(
@@ -162,10 +174,13 @@ def run_object_search(
             )
 
     try:
-        located = locate(frames, query, on_progress=on_progress)
+        located = locate(frames, query, on_progress=on_progress, scan_dir=saved_dir)
     except TypeError:
-        # Test doubles may not accept on_progress.
-        located = locate(frames, query)
+        try:
+            located = locate(frames, query, on_progress=on_progress)
+        except TypeError:
+            # Test doubles may not accept on_progress or scan_dir.
+            located = locate(frames, query)
     except MissingAPIKeyError as exc:
         update(search_id, stage="failed", failed_at="searching", error=str(exc), detail=None)
         return

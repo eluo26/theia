@@ -4,11 +4,21 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+import cv2
+import numpy as np
+
 from vision.config import load_settings
 from vision.grok_client import index_prompt
-from vision.index import filter_indexed_for_query, scan_fingerprint
+from vision.index import filter_indexed_for_query, merge_detections, scan_fingerprint
 from vision.query import _collapse_same_kind, _direct_catalog_decision
-from vision.schemas import Candidate, Catalog, CatalogObject, IndexedObject, QueryDecision
+from vision.schemas import (
+    Candidate,
+    Catalog,
+    CatalogObject,
+    Detection,
+    IndexedObject,
+    QueryDecision,
+)
 
 
 def _indexed(label, drug_name=None):
@@ -177,6 +187,111 @@ class RankingTests(unittest.TestCase):
         collapsed = _collapse_same_kind(decision, decision.candidates, objects, _SETTINGS)
         self.assertEqual(collapsed.status, "found")
         self.assertEqual(collapsed.object_id, "obj_002")
+
+
+def _detection(label, frame, bbox, confidence, azimuth):
+    return Detection(
+        label=label,
+        description=label,
+        bbox_px=list(bbox),
+        count=1,
+        confidence=confidence,
+        box_source="grok",
+        frame_file=frame,
+        pan_deg=0.0,
+        tilt_deg=0.0,
+        azimuth_deg=azimuth,
+        elevation_deg=0.0,
+        image_width=320,
+        image_height=240,
+    )
+
+
+def _translated_scan(directory: Path):
+    """Two overlapping photos of one room. The camera shifts right by 48 pixels."""
+    rng = np.random.default_rng(4)
+    canvas = rng.integers(0, 255, (240, 420, 3), dtype=np.uint8)
+    canvas = cv2.GaussianBlur(canvas, (3, 3), 0)
+    cv2.rectangle(canvas, (90, 70), (160, 170), (40, 180, 40), -1)
+    cv2.rectangle(canvas, (250, 40), (310, 120), (180, 40, 40), -1)
+    previous = canvas[:, 0:320]
+    current = canvas[:, 48:368]
+    cv2.imwrite(str(directory / "frame_000.jpg"), previous)
+    cv2.imwrite(str(directory / "frame_001.jpg"), current)
+    speaker_previous = [90, 70, 160, 170]
+    speaker_current = [42, 70, 112, 170]
+    lamp_previous = [250, 40, 310, 120]
+    lamp_current = [202, 40, 262, 120]
+    return speaker_previous, speaker_current, lamp_previous, lamp_current
+
+
+class OverlapMergeTests(unittest.TestCase):
+    def test_repeated_views_collapse_to_the_confident_angle(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            speaker_previous, speaker_current, lamp_previous, lamp_current = _translated_scan(folder)
+            detections = [
+                _detection("speaker", "frame_000.jpg", speaker_previous, 0.4, -20),
+                _detection("black speaker", "frame_001.jpg", speaker_current, 0.92, 15),
+                _detection("lamp", "frame_000.jpg", lamp_previous, 0.5, 25),
+                _detection("lamp", "frame_001.jpg", lamp_current, 0.55, 40),
+            ]
+            objects = merge_detections(detections, _SETTINGS, created_at="t", scan_dir=folder)
+        labels = sorted(obj.label for obj in objects)
+        self.assertEqual(labels, ["black speaker", "lamp"])
+        speaker = next(obj for obj in objects if "speaker" in obj.label)
+        self.assertEqual(speaker.azimuth_deg, 15)
+        self.assertEqual(speaker.confidence, 0.92)
+
+    def test_two_shifted_speakers_stay_two_objects(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            rng = np.random.default_rng(4)
+            canvas = rng.integers(0, 255, (240, 460, 3), dtype=np.uint8)
+            canvas = cv2.GaussianBlur(canvas, (3, 3), 0)
+            cv2.rectangle(canvas, (70, 60), (130, 150), (40, 180, 40), -1)
+            cv2.rectangle(canvas, (220, 50), (290, 160), (40, 180, 40), -1)
+            shift = 48
+            cv2.imwrite(str(folder / "frame_000.jpg"), canvas[:, 0:320])
+            cv2.imwrite(str(folder / "frame_001.jpg"), canvas[:, shift : shift + 320])
+            detections = [
+                _detection("speaker", "frame_000.jpg", [70, 60, 130, 150], 0.4, -25),
+                _detection("speaker", "frame_000.jpg", [220, 50, 290, 160], 0.5, 20),
+                _detection("speaker", "frame_001.jpg", [22, 60, 82, 150], 0.91, -8),
+                _detection("speaker", "frame_001.jpg", [172, 50, 242, 160], 0.7, 33),
+            ]
+            objects = merge_detections(detections, _SETTINGS, created_at="t", scan_dir=folder)
+        self.assertEqual(len(objects), 2)
+        self.assertEqual(sorted(obj.azimuth_deg for obj in objects), [-8, 33])
+
+    def test_a_single_object_still_links_when_the_wall_has_no_features(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            blank = np.full((80, 80, 3), 20, np.uint8)
+            cv2.imwrite(str(folder / "frame_000.jpg"), blank)
+            cv2.imwrite(str(folder / "frame_001.jpg"), blank)
+            detections = [
+                _detection("speaker", "frame_000.jpg", [10, 10, 40, 50], 0.3, -30),
+                _detection("speaker", "frame_001.jpg", [30, 12, 60, 52], 0.8, 12),
+            ]
+            objects = merge_detections(detections, _SETTINGS, created_at="t", scan_dir=folder)
+        self.assertEqual(len(objects), 1)
+        self.assertEqual(objects[0].azimuth_deg, 12)
+
+    def test_two_instances_in_one_photo_stay_separate_without_features(self):
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            blank = np.full((80, 80, 3), 20, np.uint8)
+            cv2.imwrite(str(folder / "frame_000.jpg"), blank)
+            cv2.imwrite(str(folder / "frame_001.jpg"), blank)
+            detections = [
+                _detection("speaker", "frame_000.jpg", [5, 10, 25, 40], 0.4, -40),
+                _detection("speaker", "frame_000.jpg", [50, 10, 75, 40], 0.7, 40),
+                _detection("speaker", "frame_001.jpg", [8, 12, 28, 42], 0.5, -22),
+                _detection("speaker", "frame_001.jpg", [48, 12, 72, 42], 0.6, 22),
+            ]
+            objects = merge_detections(detections, _SETTINGS, created_at="t", scan_dir=folder)
+        self.assertEqual(len(objects), 4)
 
 
 class FingerprintTests(unittest.TestCase):

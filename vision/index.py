@@ -30,6 +30,7 @@ from vision.ingest import (
     still_frame_meta,
 )
 from vision.matching import label_query_score, match_text, token_ratio
+from vision.overlap import overlapping_view_pairs
 from vision.preprocess import Tile, encode_jpeg, make_tiles, prepare_frame, shift_box
 from vision.schemas import (
     Catalog,
@@ -113,7 +114,9 @@ def build_catalog(
     detections = reused + fresh
     created_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     scan_path = source.resolve()
-    objects = merge_detections(detections, settings, created_at=created_at)
+    objects = merge_detections(
+        detections, settings, created_at=created_at, scan_dir=scan_path
+    )
     catalog = Catalog(
         objects=objects,
         created_at=created_at,
@@ -143,8 +146,14 @@ def merge_detections(
     settings: Settings,
     *,
     created_at: str,
+    scan_dir: Path | None = None,
 ) -> list[CatalogObject]:
-    """Merge observations with similar labels that sit close together in angle."""
+    """Merge observations of one object across the sweep.
+
+    Close angles still merge. Overlapping photos also merge when reference
+    points show the previous box landing on the next detection. The kept view
+    is the highest-confidence one, and its angle is the aim.
+    """
     if not detections:
         return []
     parent = list(range(len(detections)))
@@ -164,6 +173,8 @@ def merge_detections(
         for j in range(i + 1, len(detections)):
             if _should_merge(detections[i], detections[j], settings):
                 union(i, j)
+    for left, right in overlapping_view_pairs(detections, settings, scan_dir):
+        union(left, right)
 
     groups: dict[int, list[Detection]] = {}
     for index, detection in enumerate(detections):
@@ -308,6 +319,7 @@ def scan_fingerprint(
     prompt = grok_client.index_prompt(settings.max_objects_per_image, query=question)
     digest.update(prompt.encode("utf-8"))
     digest.update((question or "").encode("utf-8"))
+    digest.update(b"overlap-merge-v1")
     digest.update(repr(sweep).encode("utf-8"))
     if angles_csv is not None:
         _hash_file(digest, Path(angles_csv))
@@ -608,8 +620,8 @@ def _representative(group: list[Detection]) -> Detection:
 
 def _rep_key(detection: Detection) -> tuple:
     return (
-        _center_distance(detection),
         -detection.confidence,
+        _center_distance(detection),
         detection.frame_file,
         tuple(detection.bbox_px),
     )

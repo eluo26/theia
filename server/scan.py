@@ -142,6 +142,7 @@ def load_saved_scan(directory):
         frames.append(
             {
                 "image": image,
+                "file": name,
                 "pan": float(entry.get("pan") or 0.0),
                 "tilt": float(entry.get("tilt") or 0.0),
                 "timestamp": entry.get("timestamp"),
