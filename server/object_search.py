@@ -66,7 +66,42 @@ def public_detection(result, located):
         "image_height": result.get("image_height"),
         "azimuth_deg": None if aim is None else aim.get("azimuth_deg"),
         "elevation_deg": None if aim is None else aim.get("elevation_deg"),
+        "location": result.get("location"),
+        "announcement": announcement(
+            result.get("label"),
+            result.get("location"),
+            best_guess=result.get("status") == "ambiguous",
+        ),
     }
+
+
+def announcement(label, location, *, best_guess=False):
+    """What the UI says aloud for a find, e.g. "The eraser is on top of the tape roll."
+
+    A best guess (ambiguous result) says so first. None when there is no label,
+    so the UI keeps its generic message.
+    """
+    name = _clean_phrase(label)
+    if not name:
+        return None
+    for article in ("the ", "a ", "an "):
+        if name.lower().startswith(article):
+            name = name[len(article):]
+            break
+    place = _clean_phrase(location)
+    if best_guess:
+        if not place:
+            return f"My best guess is the {name}."
+        return f"My best guess: the {name} is {place[0].lower() + place[1:]}."
+    if not place:
+        return f"Found the {name}."
+    return f"The {name} is {place[0].lower() + place[1:]}."
+
+
+def _clean_phrase(text):
+    if not isinstance(text, str):
+        return ""
+    return " ".join(text.split()).rstrip(".!?").strip()
 
 
 def annotate_detection(jpeg_bytes, bbox_px, label=None):
@@ -271,13 +306,11 @@ def _search_and_aim(
     aim = located.get("aim") if isinstance(located.get("aim"), dict) else {}
     azimuth = aim.get("azimuth_deg")
     elevation = aim.get("elevation_deg")
-    found = (
-        located.get("fire_laser") is True
-        and result.get("status") == "found"
-        and _is_number(azimuth)
-        and _is_number(elevation)
-    )
-    if not found:
+    has_aim = _is_number(azimuth) and _is_number(elevation)
+    found = has_aim and located.get("fire_laser") is True and result.get("status") == "found"
+    # Ambiguous still names a best candidate: pan to it and light the laser as for found.
+    best_guess = has_aim and not found and result.get("status") == "ambiguous"
+    if not (found or best_guess):
         update(
             search_id,
             stage="failed",
@@ -300,18 +333,24 @@ def _search_and_aim(
                 photos_checked=frame_count,
                 progress_pct=100,
                 detail=None,
-                error="Found it, but it's outside the turret's range.",
+                error=(
+                    "The best guess is outside the turret's range."
+                    if best_guess
+                    else "Found it, but it's outside the turret's range."
+                ),
                 detection=detection,
                 preview_jpeg=preview,
+                best_guess=best_guess,
             )
             return
         if not update(
             search_id,
             stage="pointing",
             photos_checked=frame_count,
-            detail="Pointing at it…",
+            detail="Pointing at the best guess…" if best_guess else "Pointing at it…",
             detection=detection,
             preview_jpeg=preview,
+            best_guess=best_guess,
         ):
             return
         try:
@@ -323,9 +362,11 @@ def _search_and_aim(
             # Check again: a newer search must never inherit a lit laser.
             if not update(search_id):
                 return
+            # Found and best-guess aims both light the laser; not_found never gets here.
             seconds = laser_on_seconds()
             if seconds > 0:
                 turret.laser_on()
+                print(f"Laser on for {seconds:g} s")
                 schedule_laser_off(turret, seconds)
         except Exception as exc:
             _laser_off_quietly(turret)
@@ -351,6 +392,7 @@ def _search_and_aim(
         distance_px=_center_offset_px(detection),
         detection=detection,
         preview_jpeg=preview,
+        best_guess=best_guess,
         error=None,
     )
 

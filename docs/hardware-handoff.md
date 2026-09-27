@@ -29,14 +29,14 @@ Limits: pan 0–180, tilt 0–45. `GOTO` blocks for an estimated travel time (8 
 - **`SCAN_PANS` = servo 0, 30, …, 180**, which gives 7 photos. `servo_pan` also tries ±360 because azimuths near the far end come back wrapped.
 - **Reach is decided by pan only.** Tilt is clamped into 0–45, so an object slightly above level (for example el +3.9°) still gets panned to, with the laser held level. Refusing the whole aim over tilt was a real bug.
 - **`SerialTurret`** opens the port lazily. Opening resets the UNO, so the driver waits for `READY`, then sends `HOME`. Any timeout, `ERR` or unexpected `READY` closes the port and raises `TurretError` with a readable message. `FakeTurret` is for tests.
-- **Environment:** `TURRET=serial|none` (`none` keeps the old handheld pan-0 scan), `ARDUINO_PORT`, `ARDUINO_BAUD`, `SEARCH_SETTLE_S` (default 0.4), `LASER_ON_SECONDS` (default 15; 0 aims without lighting the laser). Add `pyserial` to `requirements.txt`.
+- **Environment:** `TURRET=serial|none` (`none` keeps the old handheld pan-0 scan), `ARDUINO_PORT`, `ARDUINO_BAUD`, `SEARCH_SETTLE_S` (default 0.4), `LASER_ON_SECONDS` (default 10; 0 aims without lighting the laser). Add `pyserial` to `requirements.txt`.
 
 ## Wiring it into the software (`server/scan.py`, `server/object_search.py`)
 
 1. `run_object_search` gets the turret only for live camera searches. **Replaying a saved scan never moves hardware.** It holds `turret_session` (a lock), so only one search drives the turret at a time.
 2. At the start of a search, cancel any pending laser-off timer and turn the laser off. Then `_turret_scan`: check that the camera works, `HOME`, and for each `SCAN_PAN` do `goto`, wait `SEARCH_SETTLE_S`, and **take only a frame that arrived after the settle**, because DroidCam lags. Tag the frame with the pan the turret reported. Before each move, check `should_continue` and raise `ScanCancelled` if a newer search replaced this one.
 3. Vision runs unchanged on the tagged frames.
-4. Aim **only** if `fire_laser` is true, `status == "found"`, and both angles are finite numbers; `ambiguous` and `not_found` never light the laser. Then `can_reach`, stage `pointing`, `goto(az, el)`, re-check that the search is still current, `laser_on`, and `schedule_laser_off(LASER_ON_SECONDS)`. On any error, turn the laser off and fail with `failed_at="pointing"`.
+4. Pan when the aim has finite angles and the status is `found`, or `ambiguous` (the best candidate: `best_guess=true` in the search state, and the UI says "My best guess"). Both light the laser. `not_found` never moves the turret. Then `can_reach`, stage `pointing`, `goto(az, el)`, re-check that the search is still current, `laser_on`, and `schedule_laser_off(LASER_ON_SECONDS)`. On any error, turn the laser off and fail with `failed_at="pointing"`.
 5. `atexit` turns the laser off if the port is open.
 
 ## Operational traps we hit

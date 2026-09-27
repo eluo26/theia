@@ -30,7 +30,8 @@ def answer(
     """Index a scan if needed, answer the question, and say whether to fire.
 
     fire_laser is true only when the query status is "found".
-    aim is {azimuth_deg, elevation_deg} when firing, and null otherwise.
+    aim is {azimuth_deg, elevation_deg} for found, and for ambiguous (the best
+    candidate to aim at). It is null otherwise.
     """
     settings = settings if settings is not None else load_settings()
     catalog = catalog_for_query(
@@ -59,7 +60,10 @@ def answer(
         on_progress({"phase": "matching", "done": 1, "total": 1})
     fire_laser = result.status == "found"
     aim = None
-    if fire_laser:
+    # An ambiguous answer still names its best candidate for the turret to aim at.
+    # fire_laser stays found-only; the server decides whether a best guess lights it.
+    best_guess = result.status == "ambiguous"
+    if (fire_laser or best_guess) and result.azimuth_deg is not None and result.elevation_deg is not None:
         aim = {
             "azimuth_deg": result.azimuth_deg,
             "elevation_deg": result.elevation_deg,

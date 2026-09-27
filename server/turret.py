@@ -33,7 +33,7 @@ SCAN_STEP_SERVO = 30
 READY_TIMEOUT_S = 5.0
 MOVE_TIMEOUT_S = 3.0
 COMMAND_TIMEOUT_S = 1.0
-DEFAULT_LASER_ON_SECONDS = 15.0
+DEFAULT_LASER_ON_SECONDS = 10.0
 
 # One search drives the turret at a time, from laser-off through aiming.
 turret_session = threading.Lock()
@@ -344,5 +344,6 @@ def cancel_laser_timer():
 def _safe_laser_off(turret):
     try:
         turret.laser_off()
+        print("Laser off (timer)")
     except Exception:
         logger.exception("Could not turn the laser off")

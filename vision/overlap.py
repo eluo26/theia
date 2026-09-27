@@ -17,7 +17,7 @@ import numpy as np
 from rapidfuzz import fuzz
 
 from vision.detector import box_iou
-from vision.matching import same_label_family
+from vision.matching import same_kind
 from vision.schemas import Detection
 
 logger = logging.getLogger("vision.overlap")
@@ -44,11 +44,21 @@ def overlapping_view_pairs(
         homography = _homography(Path(scan_dir), previous_name, current_name)
         previous_ids = by_frame[previous_name]
         current_ids = by_frame[current_name]
-        if homography is None:
-            pairs.extend(_singleton_links(previous_ids, current_ids, detections, settings))
-            continue
+        matched = []
+        if homography is not None:
+            matched = _matched_links(previous_ids, current_ids, detections, settings, homography)
+        pairs.extend(matched)
+        # Pan tags drift when the turret slips, so a view the reference points did
+        # not place still links when it is the only one of its kind in both photos.
+        linked_previous = {left for left, _right in matched}
+        linked_current = {right for _left, right in matched}
         pairs.extend(
-            _matched_links(previous_ids, current_ids, detections, settings, homography)
+            _singleton_links(
+                [index for index in previous_ids if index not in linked_previous],
+                [index for index in current_ids if index not in linked_current],
+                detections,
+                settings,
+            )
         )
     if pairs:
         logger.info("overlap linked %s repeated views", len(pairs))
@@ -81,7 +91,7 @@ def _matched_links(previous_ids, current_ids, detections, settings, homography) 
 
 
 def _singleton_links(previous_ids, current_ids, detections, settings) -> list[tuple[int, int]]:
-    """When the photos have no usable reference points, keep a label that appears once.
+    """Link a kind of object that appears once in each photo, whatever the pan tags say.
 
     Two speakers in one photo stay separate. One speaker in both photos is the
     same speaker.
@@ -125,7 +135,7 @@ def _labels_compatible(left: Detection, right: Detection, settings) -> bool:
     if left.drug_name and right.drug_name:
         if fuzz.token_ratio(left.drug_name, right.drug_name) < settings.label_sim:
             return False
-    if same_label_family(left.label, right.label, settings.label_sim):
+    if same_kind(left.label, right.label, settings.label_sim):
         return True
     return float(fuzz.token_set_ratio(left.label, right.label)) >= settings.label_sim
 

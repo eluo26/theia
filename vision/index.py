@@ -319,7 +319,7 @@ def scan_fingerprint(
     prompt = grok_client.index_prompt(settings.max_objects_per_image, query=question)
     digest.update(prompt.encode("utf-8"))
     digest.update((question or "").encode("utf-8"))
-    digest.update(b"overlap-merge-v1")
+    digest.update(b"overlap-merge-v2")
     digest.update(repr(sweep).encode("utf-8"))
     if angles_csv is not None:
         _hash_file(digest, Path(angles_csv))
@@ -549,6 +549,7 @@ def _index_tile(
                 count=obj.count,
                 drug_name=obj.drug_name,
                 expiry_text=obj.expiry_text,
+                location=obj.location,
                 confidence=confidence,
                 box_source=source,
                 frame_file=frame.source_file,
@@ -619,8 +620,10 @@ def _representative(group: list[Detection]) -> Detection:
 
 
 def _rep_key(detection: Detection) -> tuple:
+    # A box cut off by the photo edge has a shifted center, so it aims worse.
     return (
         -detection.confidence,
+        _clipped(detection),
         _center_distance(detection),
         detection.frame_file,
         tuple(detection.bbox_px),
@@ -636,16 +639,37 @@ def _center_distance(detection: Detection) -> float:
     return (dx * dx + dy * dy) ** 0.5
 
 
+_EDGE_FRACTION = 0.01
+
+
+def _clipped(detection: Detection) -> bool:
+    """True when the box touches the photo edge, so part of the object is out of view."""
+    x1, y1, x2, y2 = detection.bbox_px
+    margin_x = detection.image_width * _EDGE_FRACTION
+    margin_y = detection.image_height * _EDGE_FRACTION
+    return (
+        x1 <= margin_x
+        or y1 <= margin_y
+        or x2 >= detection.image_width - 1 - margin_x
+        or y2 >= detection.image_height - 1 - margin_y
+    )
+
+
 def _to_object(object_id: str, rep: Detection, group: list[Detection], created_at: str) -> CatalogObject:
     if rep.azimuth_deg is None or rep.elevation_deg is None:
         raise ValueError(f"detection {rep.label} is missing azimuth or elevation")
+    views = {detection.frame_file for detection in group}
+    clear = {detection.frame_file for detection in group if not _clipped(detection)}
     return CatalogObject(
+        views=len(views),
+        clear_views=len(clear),
         object_id=object_id,
         label=rep.label,
         description=rep.description,
         count=rep.count,
         drug_name=_prefer_text(rep, group, "drug_name"),
         expiry_text=_prefer_text(rep, group, "expiry_text"),
+        location=_prefer_text(rep, group, "location"),
         azimuth_deg=rep.azimuth_deg,
         elevation_deg=rep.elevation_deg,
         confidence=rep.confidence,

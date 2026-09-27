@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import cv2
 import numpy as np
@@ -10,7 +11,8 @@ import numpy as np
 from vision.config import load_settings
 from vision.grok_client import index_prompt
 from vision.index import filter_indexed_for_query, merge_detections, scan_fingerprint
-from vision.query import _collapse_same_kind, _direct_catalog_decision
+from vision.matching import same_kind
+from vision.query import _collapse_same_kind, _direct_catalog_decision, locate
 from vision.schemas import (
     Candidate,
     Catalog,
@@ -32,17 +34,21 @@ def _indexed(label, drug_name=None):
     )
 
 
-def _object(object_id, label, confidence, azimuth, elevation=0.0):
+def _object(
+    object_id, label, confidence, azimuth, elevation=0.0, views=1, clear_views=1, bbox=(0, 0, 10, 10)
+):
     return CatalogObject(
         object_id=object_id,
         label=label,
         description=label,
         count=1,
+        views=views,
+        clear_views=clear_views,
         azimuth_deg=azimuth,
         elevation_deg=elevation,
         confidence=confidence,
         frame_file="frame.jpg",
-        bbox_px=[0, 0, 10, 10],
+        bbox_px=list(bbox),
         pan_deg=0.0,
         tilt_deg=0.0,
         image_width=100,
@@ -122,7 +128,7 @@ class RankingTests(unittest.TestCase):
         self.assertEqual(decision.status, "found")
         self.assertEqual(decision.object_id, "obj_001")
 
-    def test_two_far_matches_stay_ambiguous(self):
+    def test_far_match_with_more_evidence_is_found(self):
         decision = _direct_catalog_decision(
             "blue water bottle",
             _catalog(
@@ -131,11 +137,41 @@ class RankingTests(unittest.TestCase):
             ),
             _SETTINGS,
         )
+        self.assertEqual(decision.status, "found")
+        self.assertEqual(decision.object_id, "obj_001")
+
+    def test_more_photos_beat_a_single_view(self):
+        seen_often = _object("obj_001", "blue water bottle", 0.45, -80, views=4, clear_views=3)
+        seen_once = _object("obj_002", "blue water bottle", 0.45, 30)
+        decision = _direct_catalog_decision(
+            "blue water bottle", _catalog(seen_once, seen_often), _SETTINGS
+        )
+        self.assertEqual(decision.status, "found")
+        self.assertEqual(decision.object_id, "obj_001")
+
+    def test_whole_box_beats_one_cut_off_by_the_edge(self):
+        cut_off = _object("obj_001", "energy drink can", 0.45, -120, views=3, clear_views=0)
+        whole = _object("obj_002", "energy drink can", 0.45, -40, views=2, clear_views=2)
+        decision = _direct_catalog_decision(
+            "energy drink can", _catalog(cut_off, whole), _SETTINGS
+        )
+        self.assertEqual(decision.object_id, "obj_002")
+
+    def test_tied_far_matches_stay_ambiguous_best_first(self):
+        decision = _direct_catalog_decision(
+            "blue water bottle",
+            _catalog(
+                _object("obj_001", "blue water bottle", 0.45, 40, bbox=[0, 0, 10, 10]),
+                _object("obj_002", "blue water bottle", 0.45, 0, bbox=[45, 45, 55, 55]),
+            ),
+            _SETTINGS,
+        )
         self.assertEqual(decision.status, "ambiguous")
         self.assertIsNone(decision.object_id)
+        # The centered view comes first, so the best guess aims at it.
         self.assertEqual(
             [item.object_id for item in decision.candidates],
-            ["obj_001", "obj_002"],
+            ["obj_002", "obj_001"],
         )
 
     def test_two_near_matches_pick_higher_confidence(self):
@@ -187,6 +223,56 @@ class RankingTests(unittest.TestCase):
         collapsed = _collapse_same_kind(decision, decision.candidates, objects, _SETTINGS)
         self.assertEqual(collapsed.status, "found")
         self.assertEqual(collapsed.object_id, "obj_002")
+
+    def test_text_ranking_collapses_one_kind_split_across_photos(self):
+        objects = _catalog(
+            _object("obj_001", "black computer mouse", 0.45, -175, views=1, clear_views=0),
+            _object("obj_002", "black computer mouse", 0.45, -80, views=2, clear_views=2),
+            _object("obj_003", "black mouse", 0.45, -30, views=1, clear_views=1),
+        )
+        decision = QueryDecision(
+            status="ambiguous",
+            object_id=None,
+            confidence=0.5,
+            reason="Several mice.",
+            candidates=[
+                Candidate(object_id=obj.object_id, label=obj.label, confidence=0.5, reason="a")
+                for obj in objects.objects
+            ],
+        )
+        collapsed = _collapse_same_kind(decision, decision.candidates, objects, _SETTINGS)
+        self.assertEqual(collapsed.status, "found")
+        self.assertEqual(collapsed.object_id, "obj_002")
+
+    def test_text_ranking_keeps_different_kinds_ambiguous(self):
+        objects = _catalog(
+            _object("obj_001", "red apple", 0.45, 0),
+            _object("obj_002", "orange", 0.45, 40, views=3, clear_views=3),
+        )
+        decision = QueryDecision(
+            status="ambiguous",
+            object_id=None,
+            confidence=0.5,
+            reason="Both are fruit.",
+            candidates=[
+                Candidate(object_id="obj_001", label="red apple", confidence=0.6, reason="a"),
+                Candidate(object_id="obj_002", label="orange", confidence=0.5, reason="b"),
+            ],
+        )
+        collapsed = _collapse_same_kind(decision, decision.candidates, objects, _SETTINGS)
+        self.assertEqual(collapsed, decision)
+
+
+class SameKindTests(unittest.TestCase):
+    def test_rewordings_of_one_object_are_one_kind(self):
+        self.assertTrue(same_kind("blue water bottle", "blue bottle", 85))
+        self.assertTrue(same_kind("L-Carnitine energy drink can", "silver energy drink can", 85))
+        self.assertTrue(same_kind("computer mouse", "black computer mouse", 85))
+        self.assertTrue(same_kind("water bottles", "blue water bottle", 85))
+
+    def test_different_objects_or_colors_are_not(self):
+        self.assertFalse(same_kind("black energy drink can", "white energy drink can", 85))
+        self.assertFalse(same_kind("blue water bottle", "blue notebook", 85))
 
 
 def _detection(label, frame, bbox, confidence, azimuth):
@@ -278,6 +364,24 @@ class OverlapMergeTests(unittest.TestCase):
         self.assertEqual(len(objects), 1)
         self.assertEqual(objects[0].azimuth_deg, 12)
 
+    def test_one_object_per_photo_chains_when_pan_tags_are_wrong(self):
+        # A slipping turret tags each photo with the wrong pan, so the same bottle
+        # gets far-apart angles and the reference points do not place its box.
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            _translated_scan(folder)
+            cv2.imwrite(str(folder / "frame_002.jpg"), cv2.imread(str(folder / "frame_001.jpg")))
+            detections = [
+                _detection("blue water bottle", "frame_000.jpg", [60, 20, 110, 200], 0.45, 33),
+                _detection("blue bottle", "frame_001.jpg", [200, 20, 250, 200], 0.45, -7),
+                _detection("blue water bottle", "frame_002.jpg", [0, 20, 40, 200], 0.45, -137),
+            ]
+            objects = merge_detections(detections, _SETTINGS, created_at="t", scan_dir=folder)
+        self.assertEqual(len(objects), 1)
+        self.assertEqual(objects[0].views, 3)
+        # frame_002 is cut off by the left edge, so it is not a clear view.
+        self.assertEqual(objects[0].clear_views, 2)
+
     def test_two_instances_in_one_photo_stay_separate_without_features(self):
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)
@@ -292,6 +396,32 @@ class OverlapMergeTests(unittest.TestCase):
             ]
             objects = merge_detections(detections, _SETTINGS, created_at="t", scan_dir=folder)
         self.assertEqual(len(objects), 4)
+
+
+class LocationTests(unittest.TestCase):
+    def test_prompt_asks_where_the_object_sits(self):
+        self.assertIn("- location:", index_prompt(12, query="eraser"))
+
+    def test_merge_keeps_a_location_from_any_view(self):
+        first = _detection("eraser", "frame_000.jpg", [0, 0, 10, 10], 0.9, 10)
+        second = _detection("eraser", "frame_001.jpg", [0, 0, 10, 10], 0.4, 12)
+        second.location = "on top of the blue tape roll"
+        objects = merge_detections([first, second], _SETTINGS, created_at="t")
+        self.assertEqual(len(objects), 1)
+        self.assertEqual(objects[0].location, "on top of the blue tape roll")
+
+    def test_found_result_carries_the_location(self):
+        eraser = _object("obj_001", "pink eraser", 0.8, -30)
+        eraser.location = "on top of the blue tape roll"
+        with patch("vision.query.require_api_key", return_value="x"):
+            result = locate("pink eraser", _catalog(eraser), settings=load_settings())
+        self.assertEqual(result.status, "found")
+        self.assertEqual(result.location, "on top of the blue tape roll")
+
+    def test_old_catalog_without_location_still_loads(self):
+        payload = _object("obj_001", "mug", 0.8, 0).model_dump()
+        payload.pop("location")
+        self.assertIsNone(CatalogObject.model_validate(payload).location)
 
 
 class FingerprintTests(unittest.TestCase):

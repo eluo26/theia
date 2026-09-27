@@ -11,6 +11,7 @@ const STAGES = [
 const POLL_MS = 250
 
 const SUCCESS_MESSAGE = 'The object has been located.'
+const BEST_GUESS_MESSAGE = "I'm not sure, but this is my best guess."
 const FAILURE_MESSAGE = "Couldn't find the object. Try moving the scanner somewhere else."
 
 function formatNumber(value, digits = 1) {
@@ -56,6 +57,12 @@ function stageText(search) {
     case 'pointing':
       return `Pointing… ${search.distance_px} px away`
     case 'on_target':
+      if (search.detection?.announcement) return search.detection.announcement
+      if (search.best_guess) {
+        return search.detection?.label
+          ? `Best guess: ${search.detection.label}.`
+          : 'Pointing at the best guess.'
+      }
       return search.detection?.label ? `Found ${search.detection.label}.` : 'Search completed.'
     case 'failed':
       return search.error || FAILURE_MESSAGE
@@ -127,7 +134,11 @@ function ProgressScreen({ initialSearch, onDone }) {
   const finished = search.stage === 'on_target' || search.stage === 'failed'
   const percent = progressPercent(search)
   const spokenResult =
-    search.stage === 'on_target' ? SUCCESS_MESSAGE : search.stage === 'failed' ? FAILURE_MESSAGE : null
+    search.stage === 'on_target'
+      ? search.detection?.announcement || (search.best_guess ? BEST_GUESS_MESSAGE : SUCCESS_MESSAGE)
+      : search.stage === 'failed'
+        ? FAILURE_MESSAGE
+        : null
 
   useEffect(() => {
     if (!spokenResult || !window.speechSynthesis) return

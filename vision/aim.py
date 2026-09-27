@@ -40,7 +40,9 @@ def aim(
       tilt: degrees, 0 horizontal, positive up
       timestamp: optional string
     Returns fire_laser, aim {azimuth_deg, elevation_deg} or null, and a short
-    items list. fire_laser is true only when the query status is found.
+    items list. fire_laser is true only when the query status is found. An
+    ambiguous status keeps the best candidate's aim with fire_laser false; the
+    server still aims there and decides whether to light the laser.
     """
     if not isinstance(query, str) or not query.strip():
         raise IngestError("A question is required.")
@@ -120,8 +122,9 @@ def laser_payload(raw: Mapping[str, Any]) -> dict:
     result = raw.get("result") if isinstance(raw.get("result"), Mapping) else {}
     source = raw.get("aim") if isinstance(raw.get("aim"), Mapping) else None
     found = raw.get("fire_laser") is True and result.get("status") == "found"
+    best_guess = result.get("status") == "ambiguous"
     aim_point = None
-    if found and source is not None:
+    if (found or best_guess) and source is not None:
         azimuth = source.get("azimuth_deg")
         elevation = source.get("elevation_deg")
         if isinstance(azimuth, (int, float)) and isinstance(elevation, (int, float)):

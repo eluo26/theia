@@ -9,7 +9,7 @@ import cv2
 import numpy as np
 
 from app import app
-from object_search import annotate_detection, public_search, run_object_search
+from object_search import announcement, annotate_detection, public_search, run_object_search
 from scan import (
     ScanCancelled,
     ScanStoreError,
@@ -135,6 +135,7 @@ class ObjectSearchTests(unittest.TestCase):
                     "image_height": 30,
                     "confidence": 0.9,
                     "reason": "Matched the catalog label.",
+                    "location": "next to the white energy drink can",
                 },
                 "frame_jpeg": jpeg,
             }
@@ -145,6 +146,9 @@ class ObjectSearchTests(unittest.TestCase):
 
         run_object_search(1, "mug", update, capture=capture, locate=locate)
         self.assertEqual(search["stage"], "on_target")
+        self.assertEqual(
+            search["detection"]["announcement"], "The mug is next to the white energy drink can."
+        )
         self.assertEqual(search["detection"]["bbox_px"], [8, 6, 28, 24])
         self.assertEqual(search["detection"]["center_px"], [18, 15])
         self.assertEqual(search["detection"]["azimuth_deg"], 4.0)
@@ -245,6 +249,35 @@ class ObjectSearchTests(unittest.TestCase):
         self.assertEqual(search["stage"], "failed")
         self.assertEqual(search["failed_at"], "searching")
         self.assertEqual(search["detection"]["status"], "not_found")
+
+    def test_announcement_says_where_the_object_is(self):
+        self.assertEqual(
+            announcement("pink eraser", "On top of the blue tape roll."),
+            "The pink eraser is on top of the blue tape roll.",
+        )
+        self.assertEqual(
+            announcement("the blue water bottle", "next to the white energy drink can"),
+            "The blue water bottle is next to the white energy drink can.",
+        )
+        self.assertEqual(announcement("mug", None), "Found the mug.")
+        self.assertEqual(announcement("mug", "  "), "Found the mug.")
+        self.assertIsNone(announcement(None, "next to the lamp"))
+        self.assertEqual(
+            announcement("blue water bottle", "next to the laptop", best_guess=True),
+            "My best guess: the blue water bottle is next to the laptop.",
+        )
+
+    def test_ambiguous_keeps_best_guess_aim_without_laser(self):
+        from vision.aim import laser_payload
+
+        aim = {"azimuth_deg": -37.2, "elevation_deg": 1.9}
+        payload = laser_payload(
+            {"fire_laser": False, "aim": aim, "result": {"status": "ambiguous"}}
+        )
+        self.assertFalse(payload["fire_laser"])
+        self.assertEqual(payload["aim"], aim)
+        payload = laser_payload({"fire_laser": False, "aim": aim, "result": {"status": "not_found"}})
+        self.assertIsNone(payload["aim"])
 
     def test_annotate_detection_draws_box(self):
         jpeg = tiny_jpeg()
@@ -349,15 +382,28 @@ class TurretSearchTests(unittest.TestCase):
         self.assertEqual(self.turret.calls[-1], ("goto", -40.0, -10.0))
         self.assertFalse(self.turret.laser)
 
-    def test_not_found_and_ambiguous_never_aim(self):
-        for status in ("not_found", "ambiguous"):
-            with self.subTest(status=status):
-                self.turret.calls.clear()
-                self.run_search(found_located(self.jpeg, status=status))
-                self.assertEqual(self.search["stage"], "failed")
-                aims = [call for call in self.turret.calls if call == ("goto", -40.0, -10.0)]
-                self.assertEqual(aims, [])
-                self.assertNotIn(("laser_on",), self.turret.calls)
+    def test_not_found_never_aims(self):
+        self.run_search(found_located(self.jpeg, status="not_found"))
+        self.assertEqual(self.search["stage"], "failed")
+        aims = [call for call in self.turret.calls if call == ("goto", -40.0, -10.0)]
+        self.assertEqual(aims, [])
+        self.assertNotIn(("laser_on",), self.turret.calls)
+
+    def test_ambiguous_pans_to_best_guess_and_lights_laser(self):
+        with patch.dict("os.environ", {"LASER_ON_SECONDS": "10"}):
+            self.run_search(found_located(self.jpeg, status="ambiguous"))
+        self.assertEqual(self.search["stage"], "on_target")
+        self.assertTrue(self.search["best_guess"])
+        self.assertEqual(self.search["detection"]["announcement"], "My best guess is the mug.")
+        self.assertEqual(self.turret.calls[-2:], [("goto", -40.0, -10.0), ("laser_on",)])
+        self.assertEqual(self.schedule.call_args.args[1], 10.0)
+
+    def test_ambiguous_without_aim_still_fails(self):
+        located = found_located(self.jpeg, status="ambiguous")
+        located["aim"] = None
+        self.run_search(located)
+        self.assertEqual(self.search["stage"], "failed")
+        self.assertNotIn(("goto", -40.0, -10.0), self.turret.calls)
 
     def test_out_of_reach_fails_without_laser(self):
         self.run_search(found_located(self.jpeg, azimuth=25.0))

@@ -17,7 +17,7 @@ from vision.config import REPO_ROOT, Settings, load_settings, require_api_key
 from vision.detector import tighter_agreeing_box
 from vision.geometry import angular_distance_deg, box_center_angles
 from vision.grok_client import GrokCallError, redact
-from vision.matching import match_text, query_label_close
+from vision.matching import match_text, query_label_close, same_kind
 from vision.preprocess import encode_png
 from vision.references import reference_note
 from vision.schemas import (
@@ -55,9 +55,14 @@ Handle all of these:
 - category questions, such as "something to drink" or "the diabetes medication", using labels, descriptions, and drug names
 
 status:
-- found: one catalog object answers the question
-- ambiguous: more than one catalog object could answer it; put the best ones in candidates
+- found: one catalog object answers the question. Prefer found: pick the single most reasonable object.
+- ambiguous: only when clearly different objects each answer the question equally well and nothing
+  in the question tells them apart; put the best ones in candidates, best first
 - not_found: nothing in the catalog answers it
+
+Entries with the same or similar labels are usually one object seen in several photos, not a
+reason for ambiguous. Choose the entry seen in the most photos. A label that names the object
+more exactly, or readable text that matches the question, beats a vaguer one.
 
 object_id must be an id from the catalog, or null when nothing matches.
 candidates: up to 3 catalog objects, best first. Each needs object_id, label, confidence, and reason.
@@ -181,6 +186,7 @@ def locate(
         candidates=candidates,
         metadata=metadata,
         reason=reason,
+        location=chosen.location,
     )
 
 
@@ -195,6 +201,8 @@ def catalog_text(catalog: Catalog) -> str:
                     f"id: {obj.object_id}",
                     f"label: {obj.label}",
                     f"description: {obj.description}",
+                    f"location: {obj.location or 'null'}",
+                    f"seen in photos: {obj.views}",
                     f"count: {obj.count}",
                     f"drug_name: {drug}",
                 ]
@@ -308,33 +316,60 @@ def _collapse_same_kind(
     catalog: Catalog,
     settings: Settings,
 ) -> QueryDecision:
-    """Aim at the best view when every match sits within merge_deg.
+    """Turn an ambiguous answer into found when the candidates are one kind of object.
 
-    Two photos of one object used to stay ambiguous, so the laser would not
-    point. Matches farther apart than merge_deg stay ambiguous: that is a
-    second instance, such as two blue water bottles.
+    Candidates of different kinds keep the model's answer. Same-kind candidates
+    are usually one object split across photos, so the one with the most evidence
+    is found. They stay ambiguous only when they are far apart and tied on
+    evidence; the candidates are then reordered best first for the best guess.
     """
     if decision.status != "ambiguous":
         return decision
     objects = _candidate_objects(candidates, catalog)
-    if len(objects) < 2 or _spatially_distinct(objects, settings.merge_deg):
+    if len(objects) < 2:
         return decision
-    by_id = catalog_object_map(catalog)
-    best = max(
-        (item for item in candidates if item.object_id in by_id),
-        key=lambda item: (item.confidence, by_id[item.object_id].confidence),
+    model_confidence = {item.object_id: item.confidence for item in candidates}
+    ranked = sorted(
+        objects,
+        key=lambda obj: (_evidence(obj), model_confidence.get(obj.object_id, 0.0)),
+        reverse=True,
     )
-    note = "Close matches; aiming at the highest-confidence view."
+    best = ranked[0]
+    if not all(same_kind(best.label, obj.label, settings.label_sim) for obj in ranked[1:]):
+        return decision
+    by_id = {item.object_id: item for item in candidates}
+    ordered = [by_id[obj.object_id] for obj in ranked if obj.object_id in by_id]
+    if _spatially_distinct(ranked, settings.merge_deg) and not _clearly_better(best, ranked[1]):
+        return decision.model_copy(update={"candidates": ordered})
+    note = "Same kind of object; aiming at the view with the most evidence."
     reason = decision.reason if note in decision.reason else f"{decision.reason} {note}".strip()
-    logger.info("collapsed %s close candidates to %s", len(objects), best.object_id)
+    logger.info("collapsed %s same-kind candidates to %s", len(objects), best.object_id)
     return decision.model_copy(
         update={
             "status": "found",
             "object_id": best.object_id,
-            "confidence": best.confidence,
+            "confidence": model_confidence.get(best.object_id, best.confidence),
             "reason": reason,
+            "candidates": ordered,
         }
     )
+
+
+def _evidence(obj: CatalogObject) -> tuple:
+    """How strongly the scan supports an object, best first when sorted in reverse.
+
+    Photos where the box is whole, then all photos that showed it, then the
+    detection confidence, then closeness to the photo center.
+    """
+    x1, y1, x2, y2 = obj.bbox_px
+    dx = ((x1 + x2) / 2 - obj.image_width / 2) / obj.image_width
+    dy = ((y1 + y2) / 2 - obj.image_height / 2) / obj.image_height
+    return (obj.clear_views, obj.views, round(obj.confidence, 2), -((dx * dx + dy * dy) ** 0.5))
+
+
+def _clearly_better(best: CatalogObject, other: CatalogObject) -> bool:
+    """True when the scan evidence, not only the photo position, separates two objects."""
+    return _evidence(best)[:3] > _evidence(other)[:3]
 
 
 def _is_relational(query: str) -> bool:
@@ -351,8 +386,8 @@ def _direct_catalog_decision(
 
     Relational questions and category questions that do not literally match a
     label or drug name return None so the text model still runs. One ranking
-    pass decides among the close matches: nearby views become one aim point,
-    and matches farther apart than merge_deg stay ambiguous.
+    pass decides among the close matches by scan evidence. The best one is
+    found unless another match far away is tied with it on evidence.
     """
     if _is_relational(query):
         return None
@@ -363,7 +398,7 @@ def _direct_catalog_decision(
     ]
     if not hits:
         return None
-    ranked = sorted(hits, key=lambda obj: obj.confidence, reverse=True)
+    ranked = sorted(hits, key=_evidence, reverse=True)
     candidates = [
         Candidate(
             object_id=obj.object_id,
@@ -374,10 +409,14 @@ def _direct_catalog_decision(
         for obj in ranked[:3]
     ]
     best = ranked[0]
-    if len(hits) == 1 or not _spatially_distinct(hits, settings.merge_deg):
+    if (
+        len(ranked) == 1
+        or not _spatially_distinct(ranked, settings.merge_deg)
+        or _clearly_better(best, ranked[1])
+    ):
         reason = "Matched the catalog label."
         if len(hits) > 1:
-            reason = f"{reason} Aiming at the highest-confidence view."
+            reason = f"{reason} Aiming at the view with the most evidence."
         return QueryDecision(
             status="found",
             object_id=best.object_id,

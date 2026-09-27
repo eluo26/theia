@@ -68,6 +68,7 @@ def start_search():
         "distance_px": None,
         "failed_at": None,
         "detection": None,
+        "best_guess": False,
         "error": None,
         "preview_jpeg": None,
     }

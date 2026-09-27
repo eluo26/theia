@@ -65,6 +65,10 @@ For each object provide:
 - count: how many of that same object sit inside the box
 - drug_name: the medication name if the object is a drug package, otherwise null
 - expiry_text: any visible expiry date text, otherwise null
+- location: where it sits relative to one nearby object, said so a person can find it. A short
+  phrase that starts with a preposition, such as "on top of the blue tape roll" or "next to the
+  white energy drink can". Use "on top of" only when it rests on the other object. null if
+  nothing is nearby.
 
 Only include objects you can actually see. Do not invent hidden items.
 """

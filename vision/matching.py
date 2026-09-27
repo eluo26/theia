@@ -79,6 +79,31 @@ def _color_conflict(query: str, label: str) -> bool:
     return query_colors.isdisjoint(label_colors)
 
 
+def same_kind(left: str, right: str, label_sim: float) -> bool:
+    """True when two labels name the same kind of object, looser than same_label_family.
+
+    Views of one object get different wording from photo to photo ("blue water
+    bottle", "blue bottle"; "L-Carnitine energy drink can", "silver energy drink
+    can"). The same head noun counts as one kind unless the colors disagree.
+    """
+    if same_label_family(left, right, label_sim):
+        return True
+    if _color_conflict(left, right):
+        return False
+    head_left = _head_noun(left)
+    return bool(head_left) and head_left == _head_noun(right)
+
+
+def _head_noun(label: str) -> str:
+    words = match_text(side_view_core(label)).casefold().split()
+    if not words:
+        return ""
+    head = words[-1]
+    if len(head) > 3 and head.endswith("s") and not head.endswith("ss"):
+        head = head[:-1]
+    return head
+
+
 def same_label_family(left: str, right: str, label_sim: float) -> bool:
     """True when two labels are the same object at the existing threshold.
 

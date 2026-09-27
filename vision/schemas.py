@@ -43,6 +43,14 @@ class IndexedObject(BaseModel):
     expiry_text: str | None = Field(
         description="Visible expiry text, otherwise null"
     )
+    location: str | None = Field(
+        default=None,
+        description=(
+            "Where the object sits relative to one nearby object, as a short phrase that "
+            "starts with a preposition, such as 'on top of the blue tape roll'. Null if "
+            "nothing is nearby"
+        ),
+    )
 
     @field_validator("box")
     @classmethod
@@ -85,6 +93,7 @@ class Detection(BaseModel):
     count: int = Field(ge=1)
     drug_name: str | None = None
     expiry_text: str | None = None
+    location: str | None = None
     confidence: float = Field(ge=0, le=1)
     box_source: Literal["grok", "detector"]
     frame_file: str
@@ -108,6 +117,11 @@ class CatalogObject(BaseModel):
     count: int = Field(ge=1)
     drug_name: str | None = None
     expiry_text: str | None = None
+    location: str | None = None
+    # How many photos showed this object, and how many of those boxes were not
+    # cut off by the photo edge. Ranking prefers the object with more evidence.
+    views: int = Field(default=1, ge=1)
+    clear_views: int = Field(default=1, ge=0)
     azimuth_deg: float
     elevation_deg: float
     confidence: float = Field(ge=0, le=1)
@@ -221,6 +235,8 @@ class QueryResult(BaseModel):
     candidates: list[Candidate] = Field(default_factory=list)
     metadata: ObjectMetadata = Field(default_factory=ObjectMetadata)
     reason: str
+    # Spoken to the user, e.g. "next to the white energy drink can". Null when unknown.
+    location: str | None = None
 
 
 def norm_box_to_pixels(
