@@ -1,6 +1,7 @@
 """Run a DroidCam scan and locate the asked-for object with xAI vision."""
 from __future__ import annotations
 
+import contextlib
 import logging
 import math
 import sys
@@ -15,11 +16,22 @@ if str(_ROOT) not in sys.path:
 
 from camera import CameraError
 from scan import (
+    ScanCancelled,
     ScanStoreError,
     capture_scan,
     default_scans_root,
     load_saved_scan,
     save_scan,
+)
+from turret import (
+    TurretError,
+    cancel_laser_timer,
+    clamped_servo_tilt,
+    get_turret,
+    laser_on_seconds,
+    schedule_laser_off,
+    servo_pan,
+    turret_session,
 )
 from vision.aim import search_frames
 from vision.config import MissingAPIKeyError
@@ -27,6 +39,8 @@ from vision.grok_client import GrokCallError, redact
 from vision.ingest import IngestError
 
 logger = logging.getLogger("object_search")
+
+_AUTO = object()
 
 _BOX_COLOR = (64, 140, 32)
 _CIRCLE_COLOR = (37, 99, 235)
@@ -86,14 +100,49 @@ def annotate_detection(jpeg_bytes, bbox_px, label=None):
 
 
 def run_object_search(
-    search_id, query, update, *, capture=None, locate=None, save_dir=None, replay_dir=None
+    search_id,
+    query,
+    update,
+    *,
+    capture=None,
+    locate=None,
+    save_dir=None,
+    replay_dir=None,
+    turret=_AUTO,
 ):
-    """Capture a new handheld scan, then ask the vision module where the object is.
+    """Scan, ask the vision module where the object is, then aim the laser at it.
 
     Every camera search takes a fresh set of photos. replay_dir loads one
-    folder and skips the camera.
+    folder and never moves the turret. By default the turret is used only
+    for live camera searches; tests pass one explicitly.
     """
     using_camera = capture is None and replay_dir is None
+    if turret is _AUTO:
+        turret = None
+        if using_camera:
+            try:
+                turret = get_turret()
+            except TurretError as exc:
+                update(search_id, stage="failed", failed_at="scanning", error=str(exc), detail=None)
+                return
+    session = turret_session if turret is not None else contextlib.nullcontext()
+    with session:
+        _search_and_aim(
+            search_id,
+            query,
+            update,
+            capture=capture,
+            locate=locate,
+            save_dir=save_dir,
+            replay_dir=replay_dir,
+            turret=turret,
+            using_camera=using_camera,
+        )
+
+
+def _search_and_aim(
+    search_id, query, update, *, capture, locate, save_dir, replay_dir, turret, using_camera
+):
     capture = capture_scan if capture is None else capture
     locate = search_frames if locate is None else locate
 
@@ -111,14 +160,26 @@ def run_object_search(
 
     saved_dir = Path(replay_dir) if replay_dir is not None else None
     try:
+        if turret is not None:
+            # A new search means the patient moved on; the old dot is misleading.
+            cancel_laser_timer()
+            turret.laser_off()
         if replay_dir is not None:
             frames = load_saved_scan(replay_dir)
             total = len(frames)
             for index, frame in enumerate(frames, start=1):
                 on_frame(index, total, frame, None)
+        elif turret is not None:
+            frames = capture(
+                on_frame=on_frame,
+                turret=turret,
+                should_continue=lambda: update(search_id),
+            )
         else:
             frames = capture(on_frame=on_frame)
-    except (CameraError, ScanStoreError) as exc:
+    except ScanCancelled:
+        return
+    except (CameraError, ScanStoreError, TurretError) as exc:
         update(search_id, stage="failed", failed_at="scanning", error=str(exc), detail=None)
         return
 
@@ -207,7 +268,15 @@ def run_object_search(
     result = located.get("result") if isinstance(located.get("result"), dict) else {}
     detection = public_detection(result, located)
     preview = _preview_jpeg(located, result)
-    found = located.get("fire_laser") is True and result.get("status") == "found"
+    aim = located.get("aim") if isinstance(located.get("aim"), dict) else {}
+    azimuth = aim.get("azimuth_deg")
+    elevation = aim.get("elevation_deg")
+    found = (
+        located.get("fire_laser") is True
+        and result.get("status") == "found"
+        and _is_number(azimuth)
+        and _is_number(elevation)
+    )
     if not found:
         update(
             search_id,
@@ -222,6 +291,57 @@ def run_object_search(
         )
         return
 
+    if turret is not None:
+        if not turret.can_reach(azimuth, elevation):
+            update(
+                search_id,
+                stage="failed",
+                failed_at="pointing",
+                photos_checked=frame_count,
+                progress_pct=100,
+                detail=None,
+                error="Found it, but it's outside the turret's range.",
+                detection=detection,
+                preview_jpeg=preview,
+            )
+            return
+        if not update(
+            search_id,
+            stage="pointing",
+            photos_checked=frame_count,
+            detail="Pointing at it…",
+            detection=detection,
+            preview_jpeg=preview,
+        ):
+            return
+        try:
+            print(
+                f"Aiming at azimuth {azimuth:.1f}, elevation {elevation:.1f} "
+                f"(servo pan {servo_pan(azimuth)}, tilt {clamped_servo_tilt(elevation)})"
+            )
+            turret.goto(azimuth, elevation)
+            # Check again: a newer search must never inherit a lit laser.
+            if not update(search_id):
+                return
+            seconds = laser_on_seconds()
+            if seconds > 0:
+                turret.laser_on()
+                schedule_laser_off(turret, seconds)
+        except Exception as exc:
+            _laser_off_quietly(turret)
+            print(f"Aiming failed: {exc}")
+            if not isinstance(exc, TurretError):
+                logger.exception("Aiming failed for search %s", search_id)
+            update(
+                search_id,
+                stage="failed",
+                failed_at="pointing",
+                progress_pct=100,
+                detail=None,
+                error=str(exc) if isinstance(exc, TurretError) else "Could not aim the turret.",
+            )
+            return
+
     update(
         search_id,
         stage="on_target",
@@ -233,6 +353,18 @@ def run_object_search(
         preview_jpeg=preview,
         error=None,
     )
+
+
+def _laser_off_quietly(turret):
+    cancel_laser_timer()
+    try:
+        turret.laser_off()
+    except Exception:
+        logger.exception("Could not turn the laser off")
+
+
+def _is_number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
 def _preview_jpeg(located, result):

@@ -8,10 +8,16 @@ from pathlib import Path
 import cv2
 
 from camera import CameraError, SharedCamera
+from turret import SCAN_PANS
 
-# 7 stills: a 180 degree arc sampled every 30 degrees. 3.5 / 0.5 rounds to 7.
+# Handheld mode: 7 stills, matching the turret's 180 degree arc at 30 degree
+# steps. 3.5 / 0.5 rounds to 7.
 DEFAULT_SCAN_SECONDS = 3.5
 DEFAULT_SCAN_INTERVAL_S = 0.5
+# Turret mode: pause after each move so the stream shows the new angle.
+DEFAULT_SETTLE_S = 0.4
+# The phone pans with the base but does not tilt.
+CAMERA_TILT_DEG = 0.0
 
 _camera = None
 
@@ -36,16 +42,28 @@ def encode_jpeg(frame, quality=90):
     return encoded.tobytes()
 
 
-def capture_scan(camera=None, duration_s=None, interval_s=None, on_frame=None):
-    """Take stills every interval_s for duration_s seconds.
+def capture_scan(
+    camera=None,
+    duration_s=None,
+    interval_s=None,
+    on_frame=None,
+    turret=None,
+    should_continue=None,
+):
+    """Take the photos for one search.
 
-    The default is 7 photos, the same count the turret will capture on a
-    180 degree arc at 30 degree steps. Motors are not connected yet, so pan
-    and tilt stay 0. A handheld phone sweep still gives fresh JPEGs.
+    With a turret, the camera is swept through SCAN_PANS and each photo is
+    tagged with the pan it was taken at. should_continue is checked before
+    every move; when it returns False the sweep stops with ScanCancelled.
+
+    Without a turret (TURRET=none), stills are taken every interval_s for
+    duration_s seconds and tagged pan 0, for a handheld phone sweep.
     """
+    reader = camera if camera is not None else get_camera()
+    if turret is not None:
+        return _turret_scan(reader, turret, on_frame, should_continue)
     duration_s, interval_s = _scan_timing(duration_s, interval_s)
     count = scan_photo_count(duration_s, interval_s)
-    reader = camera if camera is not None else get_camera()
     reader.read(timeout=10.0)
     start = time.monotonic()
     frames = []
@@ -55,17 +73,47 @@ def capture_scan(camera=None, duration_s=None, interval_s=None, on_frame=None):
         if remaining > 0:
             time.sleep(remaining)
         frame, _arrived = reader.read(newer_than=target)
-        jpeg = encode_jpeg(frame)
-        captured = {
-            "image": jpeg,
-            "pan": 0.0,
-            "tilt": 0.0,
-            "timestamp": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
-        }
+        captured = _captured(frame, 0.0, 0.0)
         frames.append(captured)
         if on_frame is not None:
             on_frame(index + 1, count, captured, frame)
     return frames
+
+
+def _turret_scan(reader, turret, on_frame, should_continue):
+    # Confirm the camera works before anything moves.
+    reader.read(timeout=10.0)
+    settle_s = float(os.environ.get("SEARCH_SETTLE_S", DEFAULT_SETTLE_S))
+    turret.laser_off()
+    turret.home()
+    count = len(SCAN_PANS)
+    frames = []
+    for index, pan in enumerate(SCAN_PANS):
+        if should_continue is not None and not should_continue():
+            raise ScanCancelled()
+        pose = turret.goto(pan, 0.0)
+        if settle_s > 0:
+            time.sleep(settle_s)
+        # DroidCam lags, so only accept a frame that arrived after settling.
+        frame, _arrived = reader.read(newer_than=time.monotonic())
+        captured = _captured(frame, pose[0], CAMERA_TILT_DEG)
+        frames.append(captured)
+        if on_frame is not None:
+            on_frame(index + 1, count, captured, frame)
+    return frames
+
+
+def _captured(frame, pan, tilt):
+    return {
+        "image": encode_jpeg(frame),
+        "pan": float(pan),
+        "tilt": float(tilt),
+        "timestamp": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+    }
+
+
+class ScanCancelled(Exception):
+    """A newer search replaced this one mid-sweep."""
 
 
 class ScanStoreError(CameraError):

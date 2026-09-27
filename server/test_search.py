@@ -11,6 +11,7 @@ import numpy as np
 from app import app
 from object_search import annotate_detection, public_search, run_object_search
 from scan import (
+    ScanCancelled,
     ScanStoreError,
     capture_scan,
     encode_jpeg,
@@ -19,6 +20,7 @@ from scan import (
     save_scan,
     scan_photo_count,
 )
+from turret import FakeTurret, TurretError
 
 
 def tiny_jpeg(width=40, height=30, color=(10, 20, 30)):
@@ -45,13 +47,29 @@ class ScanTests(unittest.TestCase):
         self.assertEqual(scan_photo_count(), 7)
         self.assertEqual(scan_photo_count(3.5, 0.5), 7)
 
-    def test_capture_scan_returns_jpegs_with_zero_angles(self):
+    def test_handheld_scan_returns_jpegs_with_zero_angles(self):
         frames = capture_scan(camera=FakeCamera(), duration_s=0.15, interval_s=0.05)
         self.assertEqual(len(frames), 3)
         self.assertTrue(frames[0]["image"].startswith(b"\xff\xd8"))
         self.assertEqual(frames[0]["pan"], 0.0)
         self.assertEqual(frames[0]["tilt"], 0.0)
         self.assertIsInstance(frames[0]["timestamp"], str)
+
+    def test_turret_scan_tags_real_pans(self):
+        turret = FakeTurret()
+        with patch.dict("os.environ", {"SEARCH_SETTLE_S": "0"}):
+            frames = capture_scan(camera=FakeCamera(), turret=turret)
+        self.assertEqual([frame["pan"] for frame in frames], [0, -30, -60, -90, -120, -150, -180])
+        self.assertTrue(all(frame["tilt"] == 0.0 for frame in frames))
+        self.assertEqual(turret.calls[:3], [("laser_off",), ("home",), ("goto", 0.0, 0.0)])
+
+    def test_turret_scan_stops_when_replaced(self):
+        turret = FakeTurret()
+        checks = iter([True, True, False])
+        with patch.dict("os.environ", {"SEARCH_SETTLE_S": "0"}):
+            with self.assertRaises(ScanCancelled):
+                capture_scan(camera=FakeCamera(), turret=turret, should_continue=lambda: next(checks))
+        self.assertEqual(len([call for call in turret.calls if call[0] == "goto"]), 2)
 
     def test_save_scan_roundtrip_keeps_jpeg_and_angles(self):
         jpeg = tiny_jpeg()
@@ -261,6 +279,136 @@ class ObjectSearchTests(unittest.TestCase):
         self.assertEqual(located["result"]["center_px"], [2, 3])
         self.assertEqual(located["result"]["image_width"], 40)
         self.assertTrue(located["frame_jpeg"].startswith(b"\xff\xd8"))
+
+
+def found_located(jpeg, azimuth=-40.0, elevation=-10.0, status="found"):
+    return {
+        "fire_laser": status == "found",
+        "aim": {"azimuth_deg": azimuth, "elevation_deg": elevation},
+        "result": {
+            "status": status,
+            "label": "mug",
+            "bbox_px": [8, 6, 28, 24],
+            "center_px": [18, 15],
+            "image_width": 40,
+            "image_height": 30,
+            "reason": "reason",
+        },
+        "frame_jpeg": jpeg,
+    }
+
+
+class TurretSearchTests(unittest.TestCase):
+    def setUp(self):
+        self.jpeg = tiny_jpeg()
+        self.search = {"id": 1}
+        self.turret = FakeTurret()
+        self.timer = patch("object_search.schedule_laser_off")
+        self.schedule = self.timer.start()
+        self.addCleanup(self.timer.stop)
+        scans = tempfile.TemporaryDirectory()
+        self.addCleanup(scans.cleanup)
+        self.scans = scans.name
+
+    def update(self, _search_id, **changes):
+        self.search.update(changes)
+        return True
+
+    def capture(self, on_frame=None, turret=None, should_continue=None):
+        self.assertIs(turret, self.turret)
+        self.assertTrue(should_continue())
+        turret.laser_off()
+        turret.home()
+        pose = turret.goto(0, 0)
+        return [{"image": self.jpeg, "pan": pose[0], "tilt": 0.0, "timestamp": "t"}]
+
+    def run_search(self, located):
+        run_object_search(
+            1,
+            "mug",
+            self.update,
+            capture=self.capture,
+            locate=lambda *_args, **_kw: located,
+            save_dir=self.scans,
+            turret=self.turret,
+        )
+
+    def test_found_and_reachable_aims_then_fires(self):
+        with patch.dict("os.environ", {"LASER_ON_SECONDS": "15"}):
+            self.run_search(found_located(self.jpeg))
+        self.assertEqual(self.search["stage"], "on_target")
+        self.assertEqual(self.turret.calls[0], ("laser_off",))
+        self.assertEqual(self.turret.calls[-2:], [("goto", -40.0, -10.0), ("laser_on",)])
+        self.assertTrue(self.turret.laser)
+        self.assertEqual(self.schedule.call_args.args[1], 15.0)
+
+    def test_laser_seconds_zero_aims_without_firing(self):
+        with patch.dict("os.environ", {"LASER_ON_SECONDS": "0"}):
+            self.run_search(found_located(self.jpeg))
+        self.assertEqual(self.search["stage"], "on_target")
+        self.assertEqual(self.turret.calls[-1], ("goto", -40.0, -10.0))
+        self.assertFalse(self.turret.laser)
+
+    def test_not_found_and_ambiguous_never_aim(self):
+        for status in ("not_found", "ambiguous"):
+            with self.subTest(status=status):
+                self.turret.calls.clear()
+                self.run_search(found_located(self.jpeg, status=status))
+                self.assertEqual(self.search["stage"], "failed")
+                aims = [call for call in self.turret.calls if call == ("goto", -40.0, -10.0)]
+                self.assertEqual(aims, [])
+                self.assertNotIn(("laser_on",), self.turret.calls)
+
+    def test_out_of_reach_fails_without_laser(self):
+        self.run_search(found_located(self.jpeg, azimuth=25.0))
+        self.assertEqual(self.search["stage"], "failed")
+        self.assertEqual(self.search["failed_at"], "pointing")
+        self.assertNotIn(("laser_on",), self.turret.calls)
+
+    def test_replaced_search_never_fires(self):
+        live = {"current": True}
+
+        def update(_search_id, **changes):
+            if changes.get("stage") == "pointing":
+                live["current"] = False
+            if not live["current"]:
+                return False
+            self.search.update(changes)
+            return True
+
+        run_object_search(
+            1,
+            "mug",
+            update,
+            capture=self.capture,
+            locate=lambda *_args, **_kw: found_located(self.jpeg),
+            save_dir=self.scans,
+            turret=self.turret,
+        )
+        self.assertNotIn(("laser_on",), self.turret.calls)
+
+    def test_turret_error_during_scan_fails_scanning(self):
+        def capture(on_frame=None, turret=None, should_continue=None):
+            raise TurretError("Arduino not found on COM4.")
+
+        run_object_search(1, "mug", self.update, capture=capture, locate=lambda *_: None, turret=self.turret)
+        self.assertEqual(self.search["stage"], "failed")
+        self.assertEqual(self.search["failed_at"], "scanning")
+        self.assertIn("COM4", self.search["error"])
+
+    def test_turret_error_while_aiming_turns_laser_off(self):
+        original_goto = self.turret.goto
+
+        def goto(pan, tilt):
+            if (pan, tilt) == (-40.0, -10.0):
+                raise TurretError("The turret did not answer.")
+            return original_goto(pan, tilt)
+
+        self.turret.goto = goto
+        self.run_search(found_located(self.jpeg))
+        self.assertEqual(self.search["stage"], "failed")
+        self.assertEqual(self.search["failed_at"], "pointing")
+        self.assertEqual(self.turret.calls[-1], ("laser_off",))
 
 
 class SearchApiTests(unittest.TestCase):

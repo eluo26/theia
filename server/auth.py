@@ -72,13 +72,14 @@ def init_auth(app):
     def authorize():
         if not request.path.startswith("/api/"):
             return None
-        # Vite forwards the browser's Origin (port 5173) while Flask sees port 5000.
-        # Accept only that local development proxy and actual same-origin writes.
+        # Vite forwards the browser's Origin (port 5173) while Flask sees its own
+        # port (5000 by default, or API_PORT). Accept only that local development
+        # proxy and actual same-origin writes.
         if request.method not in ("GET", "HEAD", "OPTIONS"):
             origin = request.headers.get("Origin")
             local_vite = (origin in LOCAL_VITE_ORIGINS and
                           request.remote_addr in ("127.0.0.1", "::1") and
-                          request.host in ("127.0.0.1:5000", "localhost:5000"))
+                          request.host.rsplit(":", 1)[0] in ("127.0.0.1", "localhost"))
             if origin and origin.rstrip("/") != request.host_url.rstrip("/") and not local_vite:
                 return jsonify(error="Cross-origin requests are not allowed."), 403
             if request.headers.get("Sec-Fetch-Site") == "cross-site" and not local_vite:

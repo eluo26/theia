@@ -14,8 +14,10 @@ Theia is a HackGT 13 object finder. A user asks where an item is; the future cam
 
 - `ui/src/AuthScreen.jsx` and `server/auth.py`: patient email/password registration, login, and logout. Passwords are hashed; revocable sessions use an HttpOnly cookie and SQLite at `server/data/auth.sqlite3`. The API rejects staff registration and login. Old staff records in a local database from the warehouse branch cannot authenticate on `main`.
 - `ui/src/App.jsx`, `InputScreen.jsx`, and `ProgressScreen.jsx`: patient item query by typing or browser speech recognition, search progress, and spoken success/failure. There is no staff navigation or active catalog route.
-- `server/app.py`: `POST /api/search` starts a simulated search and `GET /api/search/<id>` polls it. The progress fields are `stage`, `total_photos`, `photos_taken`, `photos_checked`, `distance_px`, and `failed_at`. A query containing `fail` simulates a miss. Search state is in memory, one active search at a time, and scoped to the signed-in patient.
-- `server/camera.py` and `capture_frames.py`: camera stream utilities kept for future real object search. The current Flask app does not expose a camera preview endpoint.
+- `server/app.py`: `POST /api/search` starts a search and `GET /api/search/<id>` polls it. The progress fields are `stage`, `total_photos`, `photos_taken`, `photos_checked`, `distance_px`, and `failed_at`. Search state is in memory, one active search at a time, and scoped to the signed-in patient.
+- `server/object_search.py` and `server/scan.py`: a live search sweeps the turret through 7 pans, saves the angle-tagged photos under `server/data/scans/`, asks `vision/aim.py` where the object is, and on a confident `found` aims the laser and lights it for `LASER_ON_SECONDS` (default 15; 0 aims without lighting). Replaying a saved scan (`scan_dir`) never moves the turret.
+- `server/turret.py` and `firmware/theia_turret/`: serial driver and Arduino firmware (115200 baud text lines: `PING`, `HOME`, `GOTO <pan> <tilt>` in servo degrees, `LASER 1|0`). Servo/vision conversion lives only in `turret.py`. Bench values: pan servo 0 is home and increasing servo angle turns left (`PAN_SIGN = -1`), so the sweep is vision pan 0 to -180; tilt servo 0 is level and 45 is down, so the laser reaches elevation 0 to -45 only. The laser is on pin D8, active-high. The firmware turns the laser off on every move and after 20 s. Configure with `TURRET` (`serial` or `none`), `ARDUINO_PORT` (COM4 on the bench laptop), `ARDUINO_BAUD`, and `SEARCH_SETTLE_S`. `TURRET=none` keeps the handheld scan with every photo at pan 0. Close the Arduino Serial Monitor before running the server.
+- `server/camera.py` and `capture_frames.py`: DroidCam stream utilities.
 
 ## Team and hardware context
 
@@ -23,7 +25,7 @@ Theia is a HackGT 13 object finder. A user asks where an item is; the future cam
 
 The camera is an iPhone running DroidCam over its hotspot, commonly at `http://172.20.10.1:4747/video`. The Arduino connects by USB; motors need separate battery power, and a transistor switches the laser. Person B is the hardware point of contact.
 
-The teammate's vision module takes angle-tagged scan photos and a query, then returns object status, a bounding box, azimuth, and elevation. The proposed convention is azimuth 0 at pan home, positive right; elevation 0 horizontal, positive up. Confirm the final JSON contract and calibration before integration. `ambiguous` and `not_found` results must not activate the laser. The real scan, turret control, laser detection, and correction loop are not yet integrated here.
+The teammate's vision module takes angle-tagged scan photos and a query, then returns object status, a bounding box, azimuth, and elevation. The proposed convention is azimuth 0 at pan home, positive right; elevation 0 horizontal, positive up. Confirm the final JSON contract and calibration before integration. `ambiguous` and `not_found` results must not activate the laser. The laser dot detection and correction loop are not yet integrated.
 
 ## Data precautions
 

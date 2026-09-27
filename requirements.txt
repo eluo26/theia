@@ -1,4 +1,5 @@
 opencv-python
 numpy
 flask
+pyserial
 -r requirements-vision.txt

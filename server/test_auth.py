@@ -93,6 +93,9 @@ class PatientAuthTests(unittest.TestCase):
                                     json={"email": "vite@example.com", "password": "test-password"})
         self.assertEqual(response.status_code, 201)
         self.assertEqual(self.client.post("/api/auth/logout", headers={"Origin": "https://other.example"}).status_code, 403)
+        # The proxy may target another local Flask port (API_PORT).
+        self.assertNotEqual(self.client.post("/api/auth/logout", base_url="http://127.0.0.1:5001",
+                                             headers={"Origin": "http://localhost:5173"}).status_code, 403)
 
 
 if __name__ == "__main__":
